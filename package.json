@@ -1,0 +1,20 @@
+{
+  "name": "raws-etl",
+  "version": "0.1.0",
+  "description": "RAWS ETL Pipeline for FDA NSDE Data",
+  "main": "index.js",
+  "scripts": {
+    "cdk": "cdk",
+    "deploy": "cdk deploy --all",
+    "diff": "cdk diff",
+    "synth": "cdk synth",
+    "bootstrap": "cdk bootstrap",
+    "repomix": "repomix . --style markdown --compress --output-show-line-numbers --header-text \"Forget all previous project files. Only use the file I'm uploading now as the sole source of truth.\" -o ~/Desktop/raws.txt"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.157.0",
+    "aws-cdk-lib": "^2.157.0",
+    "constructs": "^10.3.0"
+  },
+  "dependencies": {}
+}
