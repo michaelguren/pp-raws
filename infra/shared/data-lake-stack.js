@@ -1,4 +1,4 @@
-const { Stack, RemovalPolicy, CfnOutput } = require('aws-cdk-lib');
+const { Stack, RemovalPolicy, CfnOutput, Duration } = require('aws-cdk-lib');
 const s3 = require('aws-cdk-lib/aws-s3');
 const glue = require('aws-cdk-lib/aws-glue');
 const iam = require('aws-cdk-lib/aws-iam');
@@ -14,7 +14,7 @@ class DataLakeStack extends Stack {
       autoDeleteObjects: true,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       lifecycleRules: [{
-        abortIncompleteMultipartUploadDays: 7,
+        abortIncompleteMultipartUploadAfter: Duration.days(7),
         enabled: true
       }]
     });
@@ -25,7 +25,7 @@ class DataLakeStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       lifecycleRules: [{
-        abortIncompleteMultipartUploadDays: 7,
+        abortIncompleteMultipartUploadAfter: Duration.days(7),
         enabled: true
       }]
     });

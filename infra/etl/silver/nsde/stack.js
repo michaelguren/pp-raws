@@ -41,7 +41,19 @@ class NsdeSilverEtlStack extends Stack {
         { name: 'version', type: 'string' },
         { name: 'version_date', type: 'date' }
       ],
-      enableProjection: true
+      enableProjection: true,
+      projectionConfig: {
+        version: {
+          type: 'date',
+          format: 'yyyy-MM-dd',
+          range: '2025-01-01,NOW'
+        },
+        version_date: {
+          type: 'date',
+          format: 'yyyy-MM-dd',
+          range: '2025-01-01,NOW'
+        }
+      }
     });
 
     const silverNsdeMetadataTable = makeParquetTable(this, 'SilverNsdeMetadataTable', {

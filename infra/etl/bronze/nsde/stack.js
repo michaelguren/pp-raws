@@ -35,7 +35,14 @@ class NsdeBronzeEtlStack extends Stack {
       s3Location: `s3://${dataLakeBucketName}/bronze/nsde/data/`,
       tableName: 'bronze_nsde',
       partitionKeys: [{ name: 'version_date', type: 'date' }],
-      enableProjection: true
+      enableProjection: true,
+      projectionConfig: {
+        version_date: {
+          type: 'date',
+          format: 'yyyy-MM-dd',
+          range: '2025-01-01,NOW'
+        }
+      }
     });
 
     const bronzeNsdeMetadataTable = makeParquetTable(this, 'BronzeNsdeMetadataTable', {
