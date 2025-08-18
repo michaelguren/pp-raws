@@ -2,6 +2,9 @@ const { Stack, RemovalPolicy, CfnOutput, Duration } = require('aws-cdk-lib');
 const s3 = require('aws-cdk-lib/aws-s3');
 const glue = require('aws-cdk-lib/aws-glue');
 const iam = require('aws-cdk-lib/aws-iam');
+const events = require('aws-cdk-lib/aws-events');
+const targets = require('aws-cdk-lib/aws-events-targets');
+const s3n = require('aws-cdk-lib/aws-s3-notifications');
 
 class DataLakeStack extends Stack {
   constructor(scope, id, props) {
@@ -13,10 +16,26 @@ class DataLakeStack extends Stack {
       removalPolicy: RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      lifecycleRules: [{
-        abortIncompleteMultipartUploadAfter: Duration.days(7),
-        enabled: true
-      }]
+      lifecycleRules: [
+        {
+          abortIncompleteMultipartUploadAfter: Duration.days(7),
+          enabled: true
+        },
+        {
+          // Clean up ETL markers after 30 days
+          id: 'CleanupETLMarkers',
+          prefix: 'bronze/nsde/markers/',
+          expiration: Duration.days(30),
+          enabled: true
+        },
+        {
+          // Clean up Silver ETL markers after 30 days
+          id: 'CleanupSilverETLMarkers',
+          prefix: 'silver/nsde/markers/',
+          expiration: Duration.days(30),
+          enabled: true
+        }
+      ]
     });
 
     // Shared Glue Scripts Bucket
@@ -41,6 +60,36 @@ class DataLakeStack extends Stack {
     // Grant S3 permissions to shared Glue role
     dataLakeBucket.grantReadWrite(sharedGlueRole);
     glueScriptsBucket.grantReadWrite(sharedGlueRole);
+    
+    // Add specific permissions for ETL markers and CloudWatch
+    sharedGlueRole.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        's3:GetObject',
+        's3:PutObject',
+        's3:ListBucket'
+      ],
+      resources: [
+        `arn:aws:s3:::${dataLakeBucket.bucketName}/bronze/*/markers/*`,
+        `arn:aws:s3:::${dataLakeBucket.bucketName}/silver/*/markers/*`
+      ]
+    }));
+    
+    // CloudWatch metrics permissions
+    sharedGlueRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:PutMetricData'],
+      resources: ['*'],
+      conditions: {
+        StringEquals: {
+          'cloudwatch:namespace': 'NSDE/ETL'
+        }
+      }
+    }));
+    
+    // Glue workflow properties permissions
+    sharedGlueRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['glue:PutWorkflowRunProperties'],
+      resources: [`arn:aws:glue:${this.region}:${this.account}:workflow/*`]
+    }));
 
     // Shared Glue Database
     const glueDatabase = new glue.CfnDatabase(this, 'GlueDatabase', {
@@ -50,6 +99,9 @@ class DataLakeStack extends Stack {
         locationUri: `s3://${dataLakeBucket.bucketName}/`
       }
     });
+
+    // S3 Event Notification to EventBridge for Bronze data writes
+    dataLakeBucket.enableEventBridgeNotification();
 
     // Minimal exports for dataset stacks
     new CfnOutput(this, 'DataLakeBucketName', { 
