@@ -109,6 +109,7 @@ RAWS uses AWS CDK for IaC, ensuring one-command deploys. The framework generates
   │   │   │   └── domain.js            # Base class for domains
   │   │   ├── routes.json              # Auto-generated route manifest
   │   │   └── stack.js                 # CDK API stack
+  │   ├── etl/
   │   ├── static-web-hosting/
   │   │   └── stack.js
   │   └── shared/

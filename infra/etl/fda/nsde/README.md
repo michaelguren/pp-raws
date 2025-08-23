@@ -1,47 +1,34 @@
 # NSDE (Comprehensive NDC SPL Data Elements) ETL Pipeline
 
-This directory contains the complete ETL pipeline for FDA NSDE data using Step Functions orchestration.
+Simplified ETL pipeline for FDA NSDE data with manual testing approach.
 
 ## Architecture
 
-The pipeline follows the domain-first, orchestrator-driven pattern:
+Simplified components for faster iteration:
 
-1. **Step Functions Orchestrator** - Coordinates the entire ETL flow
-2. **Lambda Functions** - Handle data fetching, hashing, and manifest updates
-3. **Glue Jobs** - Process data transformations (Bronze → Silver)
+1. **Lambda Function** - Downloads and extracts FDA data to S3
+2. **Glue Jobs** - Process data transformations (Bronze → Silver)  
+3. **Manual Orchestration** - Use AWS CLI to trigger components individually
 4. **Config-driven** - All settings centralized in `config/dataset.json`
 
 ## Flow
 
 ```
-Input: { "dataset": "nsde", "source_url": "https://...", "force": false }
+Manual: aws lambda invoke → Download FDA data to S3
   ↓
-FetchAndHash Lambda → Download, compute SHA256, compare manifest
-  ↓
-Choice: Skip if unchanged & !force, else continue
-  ↓
-Bronze Glue Job → Raw CSV to Parquet (minimal processing)
-  ↓
-Bronze Crawler (optional) → Update Glue catalog
-  ↓
-Silver Glue Job → Cleansing, normalization, deduplication
-  ↓
-UpdateManifest Lambda → Update manifests/nsde.json
-  ↓
-Success
+Manual: aws glue start-job-run → Bronze Job (Raw CSV to Parquet)
+  ↓  
+Manual: aws glue start-job-run → Silver Job (Cleansing, normalization)
 ```
 
 ## Directory Structure
 
 ```
 nsde/
-├── cdk/
-│   └── NsdeOrchestratorStack.ts  # CDK stack definition
+├── NsdeStack.js                 # CDK stack definition
 ├── lambdas/
-│   ├── fetch_and_hash/
-│   │   └── app.py               # Download & hash Lambda
-│   └── update_manifest/
-│       └── app.py               # Manifest update Lambda
+│   └── fetch_and_hash/
+│       └── app.py               # Download & hash Lambda
 ├── glue/
 │   ├── bronze_job.py            # Bronze ETL processor
 │   └── silver_job.py            # Silver ETL processor
@@ -67,23 +54,68 @@ All pipeline settings are in `config/dataset.json`:
 
 ## Deployment
 
-Deploy the NSDE orchestrator stack:
+Deploy the simplified stack:
 
 ```bash
-cdk deploy PP-RAWS-NSDE-Orchestrator
+cdk deploy
 ```
 
-## Execution
+## Testing
 
-Trigger the pipeline manually via the trigger Lambda or Step Functions console:
+Test components individually using AWS CLI:
 
-```json
-{
-  "dataset": "nsde",
-  "source_url": "https://download.open.fda.gov/Comprehensive_NDC_SPL_Data_Elements_File.zip",
-  "force": false
-}
+### 1. Invoke Fetch Lambda
+
+```bash
+# Get Lambda function name from CDK output
+aws lambda invoke \
+  --function-name nsde-fetch-lambda \
+  --payload '{"dataset":"nsde","bucket":"BUCKET_NAME","force":false}' \
+  output.json
+
+# View the output
+cat output.json
 ```
+
+### 2. Run Bronze Job
+
+```bash
+# Use run_id from fetch output
+aws glue start-job-run \
+  --job-name nsde-bronze-etl \
+  --arguments '{
+    "--raw_path":"s3://BUCKET_NAME/raw/nsde/RUN_ID/",
+    "--run_id":"RUN_ID", 
+    "--dataset":"nsde",
+    "--bronze_path":"s3://BUCKET_NAME/bronze/nsde/run=RUN_ID/"
+  }'
+```
+
+### 3. Check Job Status
+
+```bash
+# Get job run ID from previous command output
+aws glue get-job-run \
+  --job-name nsde-bronze-etl \
+  --run-id JOB_RUN_ID
+```
+
+### 4. Run Silver Job (after Bronze succeeds)
+
+```bash
+aws glue start-job-run \
+  --job-name nsde-silver-etl \
+  --arguments '{
+    "--bronze_path":"s3://BUCKET_NAME/bronze/nsde/run=RUN_ID/",
+    "--run_id":"RUN_ID",
+    "--dataset":"nsde"
+  }'
+```
+
+### Alternative: Use AWS Console
+
+- Lambda: AWS Console → Lambda → Functions → nsde-fetch-lambda → Test
+- Glue: AWS Console → Glue → Jobs → nsde-bronze-etl → Run job
 
 ## Data Processing
 

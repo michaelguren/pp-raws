@@ -10,7 +10,7 @@ from awsglue.job import Job
 from pyspark.sql.functions import lit, current_timestamp
 from datetime import datetime
 
-# Get job parameters
+# Get job parameters - bronze_path now points to bronze bucket
 args = getResolvedOptions(sys.argv, ['JOB_NAME', 'raw_path', 'run_id', 'dataset', 'bronze_path'])
 
 # Initialize Glue

@@ -48,8 +48,15 @@ def handler(event, context):
     try:
         dataset = event['dataset']
         source_url = event['source_url']
-        run_id = event['run_id']
-        bucket = event['bucket']
+        # Use raw bucket from environment or event
+        bucket = event.get('bucket') or os.environ.get('RAW_BUCKET_NAME')
+        
+        # Generate run_id if not provided
+        run_id = event.get('run_id') or f"{dataset}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        
+        # Get other bucket names for output paths
+        bronze_bucket = os.environ.get('BRONZE_BUCKET_NAME')
+        silver_bucket = os.environ.get('SILVER_BUCKET_NAME')
         
         logger.info(f"Processing {dataset} from {source_url}")
         
@@ -97,17 +104,14 @@ def handler(event, context):
         return {
             'dataset': dataset,
             'source_url': source_url,
-            'force': event['force'],
+            'force': event.get('force', False),
             'run_id': run_id,
             'changed': changed,
             'source_sha256': source_sha256,
             'raw_path': f"s3://{bucket}/{raw_prefix}",
-            'bronze_path': f"s3://{bucket}/bronze/{dataset}/run={run_id}/",
-            'csv_count': csv_count,
-            'fetch_and_hash_function_name': event['fetch_and_hash_function_name'],
-            'update_manifest_function_name': event['update_manifest_function_name'],
-            'bronze_job_name': event['bronze_job_name'],
-            'silver_job_name': event['silver_job_name']
+            'bronze_path': f"s3://{bronze_bucket}/{dataset}/run={run_id}/",
+            'silver_path': f"s3://{silver_bucket}/{dataset}/",
+            'csv_count': csv_count
         }
         
     except Exception as e:

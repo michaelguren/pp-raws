@@ -1,0 +1,1 @@
+{"errorMessage": "'source_url'", "errorType": "KeyError", "requestId": "46986102-2452-42d2-8651-283e55a043be", "stackTrace": ["  File \"/var/task/app.py\", line 50, in handler\n    source_url = event['source_url']\n"]}

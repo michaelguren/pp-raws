@@ -13,8 +13,8 @@ from pyspark.sql.functions import (
 )
 from datetime import datetime
 
-# Get job parameters
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'bronze_path', 'run_id', 'bucket_name', 'dataset'])
+# Get job parameters - now using silver_bucket_name
+args = getResolvedOptions(sys.argv, ['JOB_NAME', 'bronze_path', 'run_id', 'silver_bucket_name', 'dataset'])
 
 # Initialize Glue
 sc = SparkContext()
@@ -29,7 +29,7 @@ spark.conf.set("spark.sql.parquet.compression.codec", "zstd")
 # Extract parameters
 bronze_path = args['bronze_path']
 run_id = args['run_id']
-bucket_name = args['bucket_name']
+silver_bucket_name = args['silver_bucket_name']
 dataset = args['dataset']
 version = datetime.utcnow().strftime('%Y-%m-%d')
 
@@ -83,7 +83,7 @@ try:
                           .withColumn("version_date", to_date(lit(version), "yyyy-MM-dd"))
     
     # Write to silver layer
-    silver_path = f"s3://{bucket_name}/silver/{dataset}/data/"
+    silver_path = f"s3://{silver_bucket_name}/{dataset}/data/"
     print(f"Writing to: {silver_path}")
     
     df_silver.write \
