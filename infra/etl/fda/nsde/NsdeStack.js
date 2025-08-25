@@ -6,18 +6,27 @@ const glue = require("aws-cdk-lib/aws-glue");
 const iam = require("aws-cdk-lib/aws-iam");
 const path = require("path");
 
-class PpRawsEtlFdaNsdeStack extends cdk.Stack {
+class PpDwEtlStack extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
-    // Load dataset configuration
-    const config = require("./config/dataset.json");
-    const dataset = config.dataset;
+    // Load warehouse and dataset configurations
+    const warehouseConfig = require("../../config/warehouse.json");
+    const datasetConfig = require("./config/dataset.json");
+    const dataset = datasetConfig.dataset;
+    
+    // Construct resource names from warehouse conventions
+    const resourceNames = {
+      bronzeJob: `${warehouseConfig.warehouse_prefix}-bronze-${dataset}`,
+      silverJob: `${warehouseConfig.warehouse_prefix}-silver-${dataset}`,
+      bronzeCrawler: `${warehouseConfig.warehouse_prefix}-bronze-${dataset}-crawler`,
+      fetchLambda: `${warehouseConfig.warehouse_prefix}-fetch-${dataset}`,
+      bucket: warehouseConfig.bucket_name_pattern.replace('{account}', this.account)
+    };
 
-    // Simple S3 bucket with default encryption
-    // Create separate buckets for each data layer
-    const rawBucket = new s3.Bucket(this, "RawBucket", {
-      bucketName: `pp-dw-raw-${this.account}`,
+    // Single data warehouse bucket with prefix-based organization
+    const dataWarehouseBucket = new s3.Bucket(this, "DataWarehouseBucket", {
+      bucketName: resourceNames.bucket,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
@@ -30,20 +39,6 @@ class PpRawsEtlFdaNsdeStack extends cdk.Stack {
       ],
     });
 
-    const bronzeBucket = new s3.Bucket(this, "BronzeBucket", {
-      bucketName: `pp-dw-bronze-${this.account}`,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-    });
-
-    const silverBucket = new s3.Bucket(this, "SilverBucket", {
-      bucketName: `pp-dw-silver-${this.account}`,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-    });
-
     // Simple Glue service role
     const glueRole = new iam.Role(this, "GlueRole", {
       assumedBy: new iam.ServicePrincipal("glue.amazonaws.com"),
@@ -54,10 +49,17 @@ class PpRawsEtlFdaNsdeStack extends cdk.Stack {
       ],
     });
 
-    // Grant S3 access to Glue for all buckets
-    rawBucket.grantRead(glueRole);
-    bronzeBucket.grantReadWrite(glueRole);
-    silverBucket.grantReadWrite(glueRole);
+    // Grant S3 access to Glue for data warehouse bucket
+    dataWarehouseBucket.grantReadWrite(glueRole);
+
+    // Glue bronze database for Athena queries (shared across all datasets)
+    const bronzeDatabase = new glue.CfnDatabase(this, "BronzeDatabase", {
+      catalogId: this.account,
+      databaseInput: {
+        name: warehouseConfig.bronze_database,
+        description: "Bronze layer database for all datasets"
+      }
+    });
 
     // Simple Lambda execution role
     const lambdaRole = new iam.Role(this, "LambdaRole", {
@@ -69,104 +71,123 @@ class PpRawsEtlFdaNsdeStack extends cdk.Stack {
       ],
     });
 
-    // Grant S3 access to Lambda (only needs raw bucket)
-    rawBucket.grantReadWrite(lambdaRole);
+    // Grant S3 access to Lambda for data warehouse bucket
+    dataWarehouseBucket.grantReadWrite(lambdaRole);
 
-    // Simple Lambda functions (no layers)
-    const fetchAndHashLambda = new lambda.Function(this, "FetchAndHashLambda", {
+    // Fetch Lambda function
+    const fetchLambda = new lambda.Function(this, "FetchLambda", {
+      functionName: resourceNames.fetchLambda,
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "app.handler",
       code: lambda.Code.fromAsset(
-        path.join(__dirname, "lambdas/fetch_and_hash")
+        path.join(__dirname, "lambdas/fetch")
       ),
-      timeout: cdk.Duration.seconds(300),
-      memorySize: 1024,
+      timeout: cdk.Duration.seconds(warehouseConfig.lambda_defaults.timeout_seconds),
+      memorySize: warehouseConfig.lambda_defaults.memory_mb,
       role: lambdaRole,
       environment: {
-        RAW_BUCKET_NAME: rawBucket.bucketName,
-        BRONZE_BUCKET_NAME: bronzeBucket.bucketName,
-        SILVER_BUCKET_NAME: silverBucket.bucketName,
+        DATA_WAREHOUSE_BUCKET_NAME: dataWarehouseBucket.bucketName,
         DATASET: dataset,
       },
     });
 
 
-    // Simple Glue jobs
+    // Bronze Glue job
     const bronzeJob = new glue.CfnJob(this, "BronzeJob", {
-      name: config.bronze_job_name,
+      name: resourceNames.bronzeJob,
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${rawBucket.bucketName}/scripts/${dataset}/bronze_job.py`,
-        pythonVersion: "3",
+        scriptLocation: `s3://${dataWarehouseBucket.bucketName}/scripts/${dataset}/bronze_job.py`,
+        pythonVersion: warehouseConfig.glue_defaults.python_version,
       },
-      glueVersion: "4.0",
-      workerType: "G.1X",
-      numberOfWorkers: 5,
-      maxRetries: 0,
-      timeout: 60,
+      glueVersion: warehouseConfig.glue_defaults.version,
+      workerType: warehouseConfig.glue_defaults.worker_type,
+      numberOfWorkers: warehouseConfig.glue_defaults.number_of_workers,
+      maxRetries: warehouseConfig.glue_defaults.max_retries,
+      timeout: warehouseConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
       },
     });
 
+    // Silver Glue job
     const silverJob = new glue.CfnJob(this, "SilverJob", {
-      name: config.silver_job_name,
+      name: resourceNames.silverJob,
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${rawBucket.bucketName}/scripts/${dataset}/silver_job.py`,
-        pythonVersion: "3",
+        scriptLocation: `s3://${dataWarehouseBucket.bucketName}/scripts/${dataset}/silver_job.py`,
+        pythonVersion: warehouseConfig.glue_defaults.python_version,
       },
-      glueVersion: "4.0",
-      workerType: "G.1X",
-      numberOfWorkers: 5,
-      maxRetries: 0,
-      timeout: 60,
+      glueVersion: warehouseConfig.glue_defaults.version,
+      workerType: warehouseConfig.glue_defaults.worker_type,
+      numberOfWorkers: warehouseConfig.glue_defaults.number_of_workers,
+      maxRetries: warehouseConfig.glue_defaults.max_retries,
+      timeout: warehouseConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
       },
     });
 
-    // Deploy Glue scripts to raw bucket
+    // Bronze crawler (auto-discovers schema from parquet files)
+    const bronzeCrawler = new glue.CfnCrawler(this, "BronzeCrawler", {
+      name: resourceNames.bronzeCrawler,
+      role: glueRole.roleArn,
+      databaseName: warehouseConfig.bronze_database,
+      targets: {
+        s3Targets: [
+          {
+            path: `s3://${dataWarehouseBucket.bucketName}/bronze/bronze_${dataset}/`
+          }
+        ]
+      },
+      configuration: JSON.stringify({
+        Version: 1.0,
+        CrawlerOutput: {
+          Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
+          Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
+        }
+      })
+    });
+
+    // Crawler depends on database
+    bronzeCrawler.addDependency(bronzeDatabase);
+
+    // Deploy Glue scripts to data warehouse bucket
     new s3Deploy.BucketDeployment(this, "GlueScripts", {
       sources: [s3Deploy.Source.asset(path.join(__dirname, "glue"))],
-      destinationBucket: rawBucket,
+      destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: `scripts/${dataset}/`
     });
 
 
     // Outputs
-    new cdk.CfnOutput(this, "RawBucketName", {
-      value: rawBucket.bucketName,
-      description: "Raw data bucket name",
-    });
-
-    new cdk.CfnOutput(this, "BronzeBucketName", {
-      value: bronzeBucket.bucketName,
-      description: "Bronze data bucket name",
-    });
-
-    new cdk.CfnOutput(this, "SilverBucketName", {
-      value: silverBucket.bucketName,
-      description: "Silver data bucket name",
+    new cdk.CfnOutput(this, "DataWarehouseBucketName", {
+      value: dataWarehouseBucket.bucketName,
+      description: "Data warehouse bucket name",
     });
 
     new cdk.CfnOutput(this, "FetchLambdaArn", {
-      value: fetchAndHashLambda.functionArn,
+      value: fetchLambda.functionArn,
       description: "Fetch Lambda ARN",
     });
 
     new cdk.CfnOutput(this, "BronzeJobName", {
-      value: config.bronze_job_name,
+      value: resourceNames.bronzeJob,
       description: "Bronze Glue Job Name",
     });
 
     new cdk.CfnOutput(this, "SilverJobName", {
-      value: config.silver_job_name,
+      value: resourceNames.silverJob,
       description: "Silver Glue Job Name",
+    });
+
+    new cdk.CfnOutput(this, "BronzeCrawlerName", {
+      value: resourceNames.bronzeCrawler,
+      description: "Bronze Crawler Name",
     });
   }
 }
 
-module.exports = { PpRawsEtlFdaNsdeStack };
+module.exports = { PpDwEtlStack };

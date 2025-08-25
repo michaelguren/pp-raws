@@ -1,5 +1,5 @@
 """
-Simple fetch and hash Lambda - no layers, inline utilities
+Simple fetch Lambda - downloads and stores raw data
 """
 import json
 import urllib.request
@@ -7,7 +7,6 @@ import zipfile
 from io import BytesIO
 import time
 import logging
-import hashlib
 import boto3
 import os
 from datetime import datetime
@@ -15,18 +14,6 @@ from datetime import datetime
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-def compute_sha256(data):
-    """Compute SHA256 hash of bytes data"""
-    return hashlib.sha256(data).hexdigest()
-
-def get_json_from_s3(bucket, key):
-    """Get JSON object from S3"""
-    s3 = boto3.client('s3')
-    try:
-        response = s3.get_object(Bucket=bucket, Key=key)
-        return json.loads(response['Body'].read())
-    except s3.exceptions.NoSuchKey:
-        return None
 
 def upload_to_s3(bucket, key, data, content_type='application/octet-stream'):
     """Upload data to S3"""
@@ -40,23 +27,23 @@ def upload_to_s3(bucket, key, data, content_type='application/octet-stream'):
 
 def handler(event, context):
     """
-    Simple Lambda handler for fetch and hash
+    Simple Lambda handler for data fetch
     
-    Input: Step Functions context with dataset, source_url, run_id, bucket
-    Output: { changed: bool, raw_path: str, bronze_path: str, source_sha256: str }
+    Input: dataset, source_url, run_id (optional)
+    Output: { raw_path: str, bronze_path: str }
     """
     try:
         dataset = event['dataset']
         source_url = event['source_url']
-        # Use raw bucket from environment or event
-        bucket = event.get('bucket') or os.environ.get('RAW_BUCKET_NAME')
+        
+        # Use environment variable for data warehouse bucket
+        bucket = os.environ.get('DATA_WAREHOUSE_BUCKET_NAME')
         
         # Generate run_id if not provided
         run_id = event.get('run_id') or f"{dataset}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
         
-        # Get other bucket names for output paths
-        bronze_bucket = os.environ.get('BRONZE_BUCKET_NAME')
-        silver_bucket = os.environ.get('SILVER_BUCKET_NAME')
+        # Get current datetime for partitioning (allows multiple runs per day)
+        partition_datetime = datetime.utcnow().strftime('%Y-%m-%d-%H%M%S')
         
         logger.info(f"Processing {dataset} from {source_url}")
         
@@ -67,19 +54,7 @@ def handler(event, context):
         
         logger.info(f"Downloaded {len(source_data)} bytes")
         
-        # Compute hash
-        source_sha256 = compute_sha256(source_data)
-        logger.info(f"SHA256: {source_sha256}")
-        
-        # Check if changed
-        manifest = get_json_from_s3(bucket, f"manifests/{dataset}.json")
-        changed = True
-        
-        if manifest and manifest.get('source_sha256') == source_sha256:
-            changed = False
-            logger.info("Source unchanged")
-        else:
-            logger.info("Source changed or first run")
+        logger.info("Processing file (always)")
         
         # Upload raw data
         raw_prefix = f"raw/{dataset}/{run_id}/"
@@ -104,13 +79,10 @@ def handler(event, context):
         return {
             'dataset': dataset,
             'source_url': source_url,
-            'force': event.get('force', False),
             'run_id': run_id,
-            'changed': changed,
-            'source_sha256': source_sha256,
             'raw_path': f"s3://{bucket}/{raw_prefix}",
-            'bronze_path': f"s3://{bronze_bucket}/{dataset}/run={run_id}/",
-            'silver_path': f"s3://{silver_bucket}/{dataset}/",
+            'bronze_path': f"s3://{bucket}/bronze/bronze_{dataset}/partition_datetime={partition_datetime}/",
+            'silver_path': f"s3://{bucket}/silver/silver_{dataset}/",
             'csv_count': csv_count
         }
         

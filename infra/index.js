@@ -1,25 +1,20 @@
 #!/usr/bin/env node
 
 const cdk = require('aws-cdk-lib');
-const { PpRawsEtlFdaNsdeStack } = require('./etl/fda/nsde/NsdeStack');
+const { PpDwEtlStack } = require('./etl/fda/nsde/NsdeStack');
 
 const app = new cdk.App();
 
-// Simple single stack for NSDE ETL
-const nsdeStack = new PpRawsEtlFdaNsdeStack(app, 'pp-raws-etl-fda-nsde', {
-  description: 'Pocket Pharmacist RAWS NSDE ETL pipeline - simplified single stack',
+// Unified data warehouse ETL stack
+const etlStack = new PpDwEtlStack(app, 'pp-dw-etl', {
+  description: 'Pocket Pharmacist Data Warehouse ETL pipeline - unified stack',
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION || 'us-east-1'
-  },
-  tags: {
-    'Project': 'RAWS',
-    'Component': 'ETL',
-    'Dataset': 'NSDE',
-    'Environment': 'Dev'
   }
 });
 
-// Future datasets can be added as separate stacks:
-// const cderStack = new CderStack(app, 'PP-RAWS-CDER', {...});
-// const rxnormStack = new RxNormStack(app, 'PP-RAWS-RxNorm', {...});
+// Future datasets will be added to this unified ETL stack by:
+// 1. Adding dataset configs to config/ directories
+// 2. Adding corresponding Glue jobs and lambdas
+// All datasets share the same S3 bucket with prefix-based organization
