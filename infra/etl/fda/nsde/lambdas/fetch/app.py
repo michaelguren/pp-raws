@@ -81,7 +81,7 @@ def handler(event, context):
             'source_url': source_url,
             'run_id': run_id,
             'raw_path': f"s3://{bucket}/{raw_prefix}",
-            'bronze_path': f"s3://{bucket}/bronze/bronze_{dataset}/partition_datetime={partition_datetime}/",
+            'bronze_path': f"s3://{bucket}/bronze/{dataset}/partition_datetime={partition_datetime}/",
             'silver_path': f"s3://{bucket}/silver/silver_{dataset}/",
             'csv_count': csv_count
         }

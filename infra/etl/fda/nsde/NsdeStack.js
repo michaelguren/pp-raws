@@ -20,7 +20,7 @@ class PpDwEtlStack extends cdk.Stack {
       bronzeJob: `${warehouseConfig.warehouse_prefix}-bronze-${dataset}`,
       silverJob: `${warehouseConfig.warehouse_prefix}-silver-${dataset}`,
       bronzeCrawler: `${warehouseConfig.warehouse_prefix}-bronze-${dataset}-crawler`,
-      fetchLambda: `${warehouseConfig.warehouse_prefix}-fetch-${dataset}`,
+      fetchLambda: `${warehouseConfig.warehouse_prefix}-raw-fetch-${dataset}`,
       bucket: warehouseConfig.bucket_name_pattern.replace('{account}', this.account)
     };
 
@@ -138,7 +138,7 @@ class PpDwEtlStack extends cdk.Stack {
       targets: {
         s3Targets: [
           {
-            path: `s3://${dataWarehouseBucket.bucketName}/bronze/bronze_${dataset}/`
+            path: `s3://${dataWarehouseBucket.bucketName}/bronze/${dataset}/`
           }
         ]
       },
