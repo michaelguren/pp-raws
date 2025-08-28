@@ -3,6 +3,8 @@ Simple NSDE Bronze Job - minimal dependencies
 Reads raw CSV from S3 and converts to Parquet
 """
 import sys
+import boto3
+import copy
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
@@ -87,6 +89,125 @@ try:
              .parquet(bronze_path)
     
     print(f"Successfully processed {row_count} records")
+
+    # Register partition with Glue catalog
+    print("Registering partition with Glue catalog...")
+    glue_client = boto3.client('glue')
+    
+    # Robust partition value extraction
+    partition_key = 'partition_datetime'
+    path_parts = [part for part in bronze_path.split('/') if part]
+    partition_value = None
+    
+    for part in path_parts:
+        if part.startswith(f"{partition_key}="):
+            partition_value = part.split('=', 1)[1]
+            break
+    
+    if not partition_value:
+        raise ValueError(f"Partition key '{partition_key}' not found in bronze_path: {bronze_path}")
+    
+    print(f"Extracted partition value: {partition_value}")
+    
+    try:
+        # Try to get table metadata - if table doesn't exist, trigger crawler first
+        try:
+            table = glue_client.get_table(
+                DatabaseName='pp_dw_bronze',
+                Name='nsde'
+            )['Table']
+            print("Bronze table found, proceeding with partition registration")
+            
+        except glue_client.exceptions.EntityNotFoundException:
+            print("Bronze table not found, triggering crawler to create it...")
+            
+            # Start the crawler to create the initial table
+            crawler_name = 'pp-dw-bronze-nsde-crawler'
+            
+            try:
+                # Check if crawler is already running
+                crawler_response = glue_client.get_crawler(Name=crawler_name)
+                if crawler_response['Crawler']['State'] == 'RUNNING':
+                    print("Crawler already running, waiting for completion...")
+                else:
+                    print("Starting crawler...")
+                    glue_client.start_crawler(Name=crawler_name)
+                
+                # Wait for crawler to complete
+                print("Waiting for crawler to complete table creation...")
+                import time
+                max_wait_time = 600  # 10 minutes max
+                wait_interval = 30   # Check every 30 seconds
+                total_waited = 0
+                
+                while total_waited < max_wait_time:
+                    time.sleep(wait_interval)
+                    total_waited += wait_interval
+                    
+                    crawler_status = glue_client.get_crawler(Name=crawler_name)
+                    state = crawler_status['Crawler']['State']
+                    print(f"Crawler state: {state} (waited {total_waited}s)")
+                    
+                    if state == 'READY':
+                        print("Crawler completed successfully")
+                        break
+                    elif state == 'STOPPING':
+                        print("Crawler is stopping...")
+                        continue
+                    elif state in ['RUNNING', 'STOPPING']:
+                        continue
+                    else:
+                        raise ValueError(f"Crawler failed with state: {state}")
+                
+                if total_waited >= max_wait_time:
+                    raise ValueError("Crawler timed out after 10 minutes")
+                
+                # Now get the newly created table
+                table = glue_client.get_table(
+                    DatabaseName='pp_dw_bronze',
+                    Name='nsde'
+                )['Table']
+                print("Successfully retrieved table metadata after crawler completion")
+                
+            except Exception as crawler_error:
+                print(f"Error with crawler: {str(crawler_error)}")
+                # Try to continue anyway - maybe table was created by another process
+                try:
+                    table = glue_client.get_table(
+                        DatabaseName='pp_dw_bronze',
+                        Name='nsde'
+                    )['Table']
+                    print("Table found despite crawler error, continuing...")
+                except:
+                    raise ValueError(f"Could not create or find bronze table: {str(crawler_error)}")
+        
+        # Deep copy storage descriptor to avoid modifying nested structures
+        storage_desc = copy.deepcopy(table['StorageDescriptor'])
+        storage_desc['Location'] = bronze_path
+        
+        # Check if partition exists
+        try:
+            glue_client.get_partition(
+                DatabaseName='pp_dw_bronze',
+                TableName='nsde',
+                PartitionValues=[partition_value]
+            )
+            print(f"Partition {partition_value} already exists, skipping creation")
+        except glue_client.exceptions.EntityNotFoundException:
+            # Create new partition
+            glue_client.create_partition(
+                DatabaseName='pp_dw_bronze',
+                TableName='nsde',
+                PartitionInput={
+                    'Values': [partition_value],
+                    'StorageDescriptor': storage_desc
+                }
+            )
+            print(f"Successfully registered partition: {partition_value}")
+            
+    except Exception as e:
+        print(f"Warning: Could not register partition: {str(e)}")
+        # Don't fail the job - partition registration is nice-to-have
 
 except Exception as e:
     print(f"Bronze job error: {str(e)}")

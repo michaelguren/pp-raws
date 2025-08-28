@@ -4,6 +4,8 @@ const s3Deploy = require("aws-cdk-lib/aws-s3-deployment");
 const lambda = require("aws-cdk-lib/aws-lambda");
 const glue = require("aws-cdk-lib/aws-glue");
 const iam = require("aws-cdk-lib/aws-iam");
+const sfn = require("aws-cdk-lib/aws-stepfunctions");
+const tasks = require("aws-cdk-lib/aws-stepfunctions-tasks");
 const path = require("path");
 
 class PpDwEtlStack extends cdk.Stack {
@@ -58,6 +60,15 @@ class PpDwEtlStack extends cdk.Stack {
       databaseInput: {
         name: warehouseConfig.bronze_database,
         description: "Bronze layer database for all datasets"
+      }
+    });
+
+    // Glue silver database for Athena queries (shared across all datasets)
+    const silverDatabase = new glue.CfnDatabase(this, "SilverDatabase", {
+      catalogId: this.account,
+      databaseInput: {
+        name: warehouseConfig.silver_database,
+        description: "Silver layer database for all datasets"
       }
     });
 
@@ -151,14 +162,78 @@ class PpDwEtlStack extends cdk.Stack {
       })
     });
 
-    // Crawler depends on database
+    // Silver crawler (for initial table creation only)
+    const silverCrawler = new glue.CfnCrawler(this, "SilverCrawler", {
+      name: `${warehouseConfig.warehouse_prefix}-silver-${dataset}-crawler`,
+      role: glueRole.roleArn,
+      databaseName: warehouseConfig.silver_database,
+      targets: {
+        s3Targets: [
+          {
+            path: `s3://${dataWarehouseBucket.bucketName}/silver/${dataset}/`
+          }
+        ]
+      },
+      configuration: JSON.stringify({
+        Version: 1.0,
+        CrawlerOutput: {
+          Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
+          Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
+        }
+      })
+    });
+
+    // Crawlers depend on databases
     bronzeCrawler.addDependency(bronzeDatabase);
+    silverCrawler.addDependency(silverDatabase);
 
     // Deploy Glue scripts to data warehouse bucket
     new s3Deploy.BucketDeployment(this, "GlueScripts", {
       sources: [s3Deploy.Source.asset(path.join(__dirname, "glue"))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: `scripts/${dataset}/`
+    });
+
+    // Step Functions workflow for orchestration
+    const fetchTask = new tasks.LambdaInvoke(this, "FetchTask", {
+      lambdaFunction: fetchLambda,
+      payload: sfn.TaskInput.fromObject({
+        dataset: datasetConfig.dataset,
+        source_url: datasetConfig.source_url
+      }),
+      outputPath: "$.Payload"
+    });
+
+    const bronzeJobTask = new tasks.GlueStartJobRun(this, "BronzeJobTask", {
+      glueJobName: resourceNames.bronzeJob,
+      arguments: sfn.TaskInput.fromObject({
+        "--raw_path": sfn.JsonPath.stringAt("$.raw_path"),
+        "--bronze_path": sfn.JsonPath.stringAt("$.bronze_path"), 
+        "--run_id": sfn.JsonPath.stringAt("$.run_id"),
+        "--dataset": sfn.JsonPath.stringAt("$.dataset")
+      }),
+      integrationPattern: sfn.IntegrationPattern.RUN_JOB,
+      resultPath: "$.bronzeJobResult"
+    });
+
+    const silverJobTask = new tasks.GlueStartJobRun(this, "SilverJobTask", {
+      glueJobName: resourceNames.silverJob,
+      arguments: sfn.TaskInput.fromObject({
+        "--bronze_path": sfn.JsonPath.stringAt("$.bronze_path"),
+        "--silver_path": sfn.JsonPath.stringAt("$.silver_path"),
+        "--run_id": sfn.JsonPath.stringAt("$.run_id"),
+        "--dataset": sfn.JsonPath.stringAt("$.dataset")
+      }),
+      integrationPattern: sfn.IntegrationPattern.RUN_JOB,
+      resultPath: "$.silverJobResult"
+    });
+
+    const definition = fetchTask.next(bronzeJobTask).next(silverJobTask);
+
+    const stateMachine = new sfn.StateMachine(this, "EtlPipeline", {
+      definitionBody: sfn.DefinitionBody.fromChainable(definition),
+      stateMachineName: `${warehouseConfig.warehouse_prefix}-pipeline-${dataset}`,
+      timeout: cdk.Duration.minutes(30)
     });
 
 
@@ -186,6 +261,16 @@ class PpDwEtlStack extends cdk.Stack {
     new cdk.CfnOutput(this, "BronzeCrawlerName", {
       value: resourceNames.bronzeCrawler,
       description: "Bronze Crawler Name",
+    });
+
+    new cdk.CfnOutput(this, "SilverCrawlerName", {
+      value: `${warehouseConfig.warehouse_prefix}-silver-${dataset}-crawler`,
+      description: "Silver Crawler Name (for initial table creation)",
+    });
+
+    new cdk.CfnOutput(this, "EtlPipelineArn", {
+      value: stateMachine.stateMachineArn,
+      description: "ETL Pipeline State Machine ARN",
     });
   }
 }
