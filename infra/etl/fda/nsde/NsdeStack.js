@@ -140,6 +140,20 @@ class NsdeStack extends cdk.Stack {
       destinationKeyPrefix: `scripts/${dataset}/`
     });
 
+    // Deploy warehouse config to S3
+    new s3Deploy.BucketDeployment(this, "WarehouseConfig", {
+      sources: [s3Deploy.Source.asset(path.join(__dirname, "../../config"))],
+      destinationBucket: dataWarehouseBucket,
+      destinationKeyPrefix: "scripts/config/"
+    });
+
+    // Deploy dataset config to S3
+    new s3Deploy.BucketDeployment(this, "DatasetConfig", {
+      sources: [s3Deploy.Source.asset(path.join(__dirname, "config"))],
+      destinationBucket: dataWarehouseBucket,
+      destinationKeyPrefix: `scripts/fda/${dataset}/config/`
+    });
+
     // Step Functions workflow for orchestration
     const fetchTask = new tasks.LambdaInvoke(this, "FetchTask", {
       lambdaFunction: fetchLambda,
