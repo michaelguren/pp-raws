@@ -14,7 +14,6 @@ cdk.context.json
 cdk-staging/
 
 # Claude
-CLAUDE.md
 .claude/
 claude-cache/
 .claude-artifacts/
