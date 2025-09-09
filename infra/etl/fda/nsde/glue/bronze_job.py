@@ -5,6 +5,7 @@ Reads raw CSV from S3 and converts to Parquet
 import sys
 import boto3
 import copy
+import json
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
@@ -13,8 +14,8 @@ from pyspark.sql.functions import lit, current_timestamp, col, regexp_replace, w
 from pyspark.sql.types import IntegerType, DateType
 from datetime import datetime
 
-# Get job parameters - bronze_path now points to bronze bucket
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'raw_path', 'run_id', 'dataset', 'bronze_path'])
+# Get job parameters - only runtime essentials
+args = getResolvedOptions(sys.argv, ['JOB_NAME', 'run_id', 'bucket_name'])
 
 # Initialize Glue
 sc = SparkContext()
@@ -26,15 +27,38 @@ job.init(args['JOB_NAME'], args)
 # Configure Spark
 spark.conf.set("spark.sql.parquet.compression.codec", "zstd")
 
-# Extract parameters
-raw_path = args['raw_path']
+# Load configuration
+s3_client = boto3.client('s3')
+bucket_name = args['bucket_name']
 run_id = args['run_id']
-dataset = args['dataset']
-bronze_path = args['bronze_path']
+
+# Load warehouse config
+warehouse_config_key = 'scripts/config/warehouse.json'
+warehouse_config = json.loads(
+    s3_client.get_object(Bucket=bucket_name, Key=warehouse_config_key)['Body'].read()
+)
+
+# Load dataset config  
+dataset_config_key = 'scripts/fda/nsde/config/dataset.json'
+dataset_config = json.loads(
+    s3_client.get_object(Bucket=bucket_name, Key=dataset_config_key)['Body'].read()
+)
+
+# Extract configuration values
+dataset = dataset_config['dataset']
+date_format = dataset_config['date_format']
+bronze_database = warehouse_config['bronze_database']
+
+# Build paths from config
+raw_path = f"s3://{bucket_name}/raw/{dataset}/run_id={run_id}/"
+bronze_path = f"s3://{bucket_name}/bronze/bronze_{dataset}/partition_datetime={run_id}/"
 
 print(f"Starting Bronze ETL for {dataset}")
 print(f"Raw path: {raw_path}")
+print(f"Bronze path: {bronze_path}")
 print(f"Run ID: {run_id}")
+print(f"Date format: {date_format}")
+print(f"Bronze database: {bronze_database}")
 
 try:
     # Read CSV files from raw path
@@ -65,13 +89,14 @@ try:
     
     print(f"Cleaned columns: {df.columns}")
     
-    # Fix date columns - convert YYYYMMDD strings to proper dates
+    # Fix date columns - convert date strings to proper dates using configurable format
     date_columns = [col for col in df.columns if 'date' in col]
+    print(f"Using date format: {date_format}")
     for date_col in date_columns:
         df = df.withColumn(
             date_col, 
             when(col(date_col).isNull() | (col(date_col) == ""), None)
-            .otherwise(to_date(col(date_col).cast("string"), "yyyyMMdd"))
+            .otherwise(to_date(col(date_col).cast("string"), date_format))
         )
     
     print(f"Fixed date columns: {date_columns}")
@@ -105,6 +130,8 @@ try:
             break
     
     if not partition_value:
+        print(f"Warning: Partition key '{partition_key}' not found in bronze_path: {bronze_path}")
+        print("This could indicate a path format change or different dataset structure")
         raise ValueError(f"Partition key '{partition_key}' not found in bronze_path: {bronze_path}")
     
     print(f"Extracted partition value: {partition_value}")
@@ -113,8 +140,8 @@ try:
         # Try to get table metadata - if table doesn't exist, trigger crawler first
         try:
             table = glue_client.get_table(
-                DatabaseName='pp_dw_bronze',
-                Name='nsde'
+                DatabaseName=bronze_database,
+                Name=dataset
             )['Table']
             print("Bronze table found, proceeding with partition registration")
             
@@ -122,7 +149,7 @@ try:
             print("Bronze table not found, triggering crawler to create it...")
             
             # Start the crawler to create the initial table
-            crawler_name = 'pp-dw-bronze-nsde-crawler'
+            crawler_name = f"{warehouse_config['warehouse_prefix']}-bronze-{dataset}-crawler"
             
             try:
                 # Check if crawler is already running
@@ -160,12 +187,14 @@ try:
                         raise ValueError(f"Crawler failed with state: {state}")
                 
                 if total_waited >= max_wait_time:
-                    raise ValueError("Crawler timed out after 10 minutes")
+                    print(f"Error: Crawler timed out after {max_wait_time//60} minutes")
+                    print("Cannot proceed without confirmed table creation")
+                    raise ValueError(f"Crawler timed out after {max_wait_time//60} minutes - table creation uncertain")
                 
                 # Now get the newly created table
                 table = glue_client.get_table(
-                    DatabaseName='pp_dw_bronze',
-                    Name='nsde'
+                    DatabaseName=bronze_database,
+                    Name=dataset
                 )['Table']
                 print("Successfully retrieved table metadata after crawler completion")
                 
@@ -174,8 +203,8 @@ try:
                 # Try to continue anyway - maybe table was created by another process
                 try:
                     table = glue_client.get_table(
-                        DatabaseName='pp_dw_bronze',
-                        Name='nsde'
+                        DatabaseName=bronze_database,
+                        Name=dataset
                     )['Table']
                     print("Table found despite crawler error, continuing...")
                 except:
@@ -188,16 +217,16 @@ try:
         # Check if partition exists
         try:
             glue_client.get_partition(
-                DatabaseName='pp_dw_bronze',
-                TableName='nsde',
+                DatabaseName=bronze_database,
+                TableName=dataset,
                 PartitionValues=[partition_value]
             )
             print(f"Partition {partition_value} already exists, skipping creation")
         except glue_client.exceptions.EntityNotFoundException:
             # Create new partition
             glue_client.create_partition(
-                DatabaseName='pp_dw_bronze',
-                TableName='nsde',
+                DatabaseName=bronze_database,
+                TableName=dataset,
                 PartitionInput={
                     'Values': [partition_value],
                     'StorageDescriptor': storage_desc

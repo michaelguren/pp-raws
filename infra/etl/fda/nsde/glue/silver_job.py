@@ -5,6 +5,7 @@ Reads bronze data and applies SCD Type 2 versioning for change tracking
 import sys
 import boto3
 import copy
+import json
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
@@ -18,8 +19,8 @@ from pyspark.sql.window import Window
 from pyspark.sql.types import BooleanType, StringType
 from datetime import datetime, date
 
-# Get job parameters
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'bronze_path', 'silver_path', 'run_id', 'dataset'])
+# Get job parameters - only runtime essentials
+args = getResolvedOptions(sys.argv, ['JOB_NAME', 'run_id', 'bucket_name'])
 
 # Initialize Glue
 sc = SparkContext()
@@ -33,18 +34,40 @@ spark.conf.set("spark.sql.parquet.compression.codec", "zstd")
 spark.conf.set("spark.sql.adaptive.enabled", "true")
 spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
 
-# Extract parameters
-bronze_path = args['bronze_path']
-silver_path = args['silver_path']
+# Load configuration
+s3_client = boto3.client('s3')
+bucket_name = args['bucket_name']
 run_id = args['run_id']
-dataset = args['dataset']
+
+# Load warehouse config
+warehouse_config_key = 'scripts/config/warehouse.json'
+warehouse_config = json.loads(
+    s3_client.get_object(Bucket=bucket_name, Key=warehouse_config_key)['Body'].read()
+)
+
+# Load dataset config  
+dataset_config_key = 'scripts/fda/nsde/config/dataset.json'
+dataset_config = json.loads(
+    s3_client.get_object(Bucket=bucket_name, Key=dataset_config_key)['Body'].read()
+)
+
+# Extract configuration values
+dataset = dataset_config['dataset']
+bronze_database = warehouse_config['bronze_database']
+silver_database = warehouse_config['silver_database']
 process_date = datetime.utcnow().strftime('%Y-%m-%d')
+
+# Build paths from config - read from latest bronze partition
+bronze_path = f"s3://{bucket_name}/bronze/bronze_{dataset}/partition_datetime={run_id}/"
+silver_path = f"s3://{bucket_name}/silver/silver_{dataset}/"
 
 print(f"Starting Silver ETL with SCD Type 2 for {dataset}")
 print(f"Bronze path: {bronze_path}")
 print(f"Silver path: {silver_path}")
 print(f"Run ID: {run_id}")
 print(f"Process date: {process_date}")
+print(f"Bronze database: {bronze_database}")
+print(f"Silver database: {silver_database}")
 
 try:
     # Read from bronze
@@ -63,8 +86,8 @@ try:
     print("Preparing business key for SCD Type 2...")
     df_bronze = df_bronze_raw
     
-    # Use NDC11 as business key (Bronze already normalized it)
-    business_key = "ndc11"
+    # Use business key from config
+    business_key = dataset_config['business_key']
     if business_key not in df_bronze.columns:
         raise ValueError(f"Required business key column '{business_key}' not found in bronze data")
     
@@ -231,7 +254,7 @@ try:
     
     try:
         table = glue_client.get_table(
-            DatabaseName='pp_dw_silver',
+            DatabaseName=silver_database,
             Name=table_name
         )['Table']
         table_exists = True
@@ -241,7 +264,7 @@ try:
         print("Silver table not found, triggering crawler to create it...")
         
         # Start the crawler to create the initial table
-        crawler_name = f'pp-dw-silver-{dataset}-crawler'
+        crawler_name = f"{warehouse_config['warehouse_prefix']}-silver-{dataset}-crawler"
         
         try:
             # Check if crawler is already running
@@ -283,7 +306,7 @@ try:
             
             # Now get the newly created table
             table = glue_client.get_table(
-                DatabaseName='pp_dw_silver',
+                DatabaseName=silver_database,
                 Name=table_name
             )['Table']
             table_exists = True
@@ -294,7 +317,7 @@ try:
             # Try to continue anyway - maybe table was created by another process
             try:
                 table = glue_client.get_table(
-                    DatabaseName='pp_dw_silver',
+                    DatabaseName=silver_database,
                     Name=table_name
                 )['Table']
                 table_exists = True
@@ -315,7 +338,7 @@ try:
                 # Check if partition already exists
                 try:
                     glue_client.get_partition(
-                        DatabaseName='pp_dw_silver',
+                        DatabaseName=silver_database,
                         TableName=table_name,
                         PartitionValues=[partition_value]
                     )
@@ -323,7 +346,7 @@ try:
                 except glue_client.exceptions.EntityNotFoundException:
                     # Create new partition
                     glue_client.create_partition(
-                        DatabaseName='pp_dw_silver',
+                        DatabaseName=silver_database,
                         TableName=table_name,
                         PartitionInput={
                             'Values': [partition_value],

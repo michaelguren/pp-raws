@@ -2,6 +2,8 @@
   "dataset": "nsde",
   "source_url": "https://download.open.fda.gov/Comprehensive_NDC_SPL_Data_Elements_File.zip",
   "description": "FDA Comprehensive NDC SPL Data Elements File",
+  "date_format": "yyyyMMdd",
+  "business_key": "ndc11",
   "schedule": {
     "enabled": false,
     "expression": "cron(0 6 * * ? *)"
