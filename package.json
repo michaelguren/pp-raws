@@ -9,8 +9,8 @@
     "diff": "cdk diff",
     "synth": "cdk synth",
     "bootstrap": "cdk bootstrap",
-    "repomix-all": "repomix . --style markdown --compress --output-show-line-numbers --header-text \"Forget all previous project files. Only use the file I'm uploading now as the sole source of truth.\" -o ~/Desktop/pp-raws.txt",
-    "repomix-infra": "repomix ./infra --style markdown --compress --output-show-line-numbers --header-text \"Forget all previous project files. Only use the file I'm uploading now as the sole source of truth.\" -o ~/Desktop/pp-raws-infra-only.txt"
+    "repomix-all": "repomix . --style markdown --compress --output-show-line-numbers --header-text \"Forget all previous project files. Only use the file I'm uploading now as the sole source of truth.\" -o ~/Desktop/pp-raws.md",
+    "repomix-infra": "repomix ./infra --style markdown --compress --output-show-line-numbers --header-text \"Forget all previous project files. Only use the file I'm uploading now as the sole source of truth.\" -o ~/Desktop/pp-raws-infra-only.md"
   },
   "devDependencies": {
     "aws-cdk": "^2.157.0",

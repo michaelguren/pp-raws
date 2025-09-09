@@ -1,20 +1,37 @@
 #!/usr/bin/env node
 
 const cdk = require('aws-cdk-lib');
-const { PpDwEtlStack } = require('./etl/fda/nsde/NsdeStack');
+const { EtlCoreStack } = require('./etl/EtlCoreStack');
+const { NsdeStack } = require('./etl/fda/nsde/NsdeStack');
 
 const app = new cdk.App();
 
-// Unified data warehouse ETL stack
-const etlStack = new PpDwEtlStack(app, 'pp-dw-etl', {
-  description: 'Pocket Pharmacist Data Warehouse ETL pipeline - unified stack',
+// ===== ETL Infrastructure =====
+// Core ETL infrastructure (shared S3 bucket, databases, IAM roles)
+const etlCoreStack = new EtlCoreStack(app, 'pp-dw-etl-core', {
+  description: 'Shared ETL infrastructure - S3 bucket, databases, IAM roles',
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION || 'us-east-1'
   }
 });
 
-// Future datasets will be added to this unified ETL stack by:
-// 1. Adding dataset configs to config/ directories
-// 2. Adding corresponding Glue jobs and lambdas
-// All datasets share the same S3 bucket with prefix-based organization
+// Dataset-specific ETL stacks
+const nsdeStack = new NsdeStack(app, 'pp-dw-etl-nsde', {
+  description: 'FDA NSDE dataset ETL pipeline',
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION || 'us-east-1'
+  }
+});
+
+// Ensure NSDE stack depends on core infrastructure
+nsdeStack.addDependency(etlCoreStack);
+
+// ===== API Infrastructure =====
+// Future: API Gateway, Lambda functions, DynamoDB tables
+// const apiStack = new PpApiStack(app, 'pp-api', {...});
+
+// ===== Frontend Infrastructure =====  
+// Future: S3 static hosting, CloudFront distribution
+// const frontendStack = new PpFrontendStack(app, 'pp-frontend', {...});

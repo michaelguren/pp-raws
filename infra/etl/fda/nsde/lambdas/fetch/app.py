@@ -57,7 +57,7 @@ def handler(event, context):
         logger.info("Processing file (always)")
         
         # Upload raw data
-        raw_prefix = f"raw/{dataset}/{run_id}/"
+        raw_prefix = f"raw/{dataset}/run_id={run_id}/"
         
         # Save original ZIP
         zip_key = f"{raw_prefix}source.zip"

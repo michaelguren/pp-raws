@@ -5,7 +5,7 @@
 ### Medallion Architecture
 We implement a **Bronze → Silver → Gold** medallion architecture for all datasets:
 
-- **Raw Layer**: S3 prefix `raw/{dataset}/` - Original source data (zip, csv) with run-based organization
+- **Raw Layer**: S3 prefix `raw/{dataset}/run_id={run_id}/` - Original source data (zip, csv) with run-based organization
 - **Bronze Layer**: S3 prefix `bronze/bronze_{dataset}/partition_datetime={timestamp}/` - Cleaned, typed parquet with metadata
 - **Silver Layer**: S3 prefix `silver/silver_{dataset}/` - Business logic, SCD Type 2, deduplication  
 - **Gold Layer**: (Future) Analytics-ready aggregations and marts
@@ -14,14 +14,15 @@ We implement a **Bronze → Silver → Gold** medallion architecture for all dat
 All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
 
 **Glue Jobs:**
-- `pp-dw-bronze-{dataset}` (e.g., `pp-dw-bronze-nsde`)
-- `pp-dw-silver-{dataset}` (e.g., `pp-dw-silver-nsde`)
+- `pp-dw-bronze-{dataset}`
+- `pp-dw-silver-{dataset}`
 
 **Crawlers:**
-- `pp-dw-bronze-{dataset}-crawler` (e.g., `pp-dw-bronze-nsde-crawler`)
+- `pp-dw-bronze-{dataset}-crawler`
+- `pp-dw-silver-{dataset}-crawler`
 
 **Lambda Functions:**
-- `pp-dw-raw-fetch-{dataset}` (e.g., `pp-dw-raw-fetch-nsde`)
+- `pp-dw-raw-fetch-{dataset}`
 
 **Databases:**
 - `pp_dw_bronze` (shared across all datasets)
@@ -29,7 +30,7 @@ All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
 - `pp_dw_gold` (future)
 
 **Tables:**
-- `{dataset}` (e.g., `nsde` in both bronze and silver databases)
+- `{dataset}` (same name in both bronze and silver databases)
 
 ### Partitioning Strategy
 - **Raw data**: Partitioned by `run_id` for lineage tracking
@@ -49,22 +50,22 @@ All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
   - `is_current` boolean flag for active records  
   - `change_type` (INSERT/UPDATE/DELETE) for audit trails
   - `record_hash` MD5 fingerprint for change detection
-  - Business key validation (`ndc11_normalized` for NSDE)
+  - Business key normalization and validation as needed
 - Smart merge logic handles new, changed, and deleted records
 - Partitioned by `effective_year_month` for query performance
 - Complete audit trail for regulatory compliance
 
 ### Infrastructure Pattern
-**Single Unified Stack:** All ETL operations live in one `pp-dw-etl` CDK stack for:
-- Simplified deployment and management
-- Shared S3 bucket with prefix-based organization
-- Consistent IAM roles and policies
-- Reduced infrastructure complexity
+**Core + Dataset Stack Separation:**
+- **EtlCoreStack**: Shared S3 bucket, Glue databases, IAM roles
+- **Dataset Stacks**: Dataset-specific Lambda, Glue jobs, crawlers, Step Functions
+- Clean separation of concerns with CloudFormation cross-stack references
+- Core infrastructure deployed once, dataset stacks can deploy independently
 
 ### S3 Organization
 ```
 s3://pp-dw-{account}/
-├── raw/{dataset}/run_id/                              # Original source files
+├── raw/{dataset}/run_id={run_id}/                     # Original source files
 ├── bronze/bronze_{dataset}/partition_datetime={ts}/   # Cleaned parquet, datetime partitioned
 ├── silver/silver_{dataset}/                           # Business logic applied
 ├── gold/{dataset}/                                    # (Future) Analytics marts
@@ -86,11 +87,12 @@ Resource names are **dynamically constructed** from warehouse conventions + data
 ### Adding New Datasets
 To add a new dataset (e.g., `rxnorm`):
 
-1. **Create dataset config**: `./fda/rxnorm/config/dataset.json` (inherits warehouse conventions)
+1. **Create dataset config**: `./fda/rxnorm/config/dataset.json`
 2. **Add Lambda function**: `./fda/rxnorm/lambdas/fetch/app.py`
 3. **Create Glue jobs**: `./fda/rxnorm/glue/{bronze,silver}_job.py`
-4. **Update stack**: Add resources to `NsdeStack.js` (or refactor to generic)
-5. **Deploy**: All resources created with consistent naming automatically
+4. **Create dataset stack**: `./fda/rxnorm/RxnormStack.js` (copy from NsdeStack pattern)
+5. **Update index.js**: Add new stack instantiation with dependency on EtlCoreStack
+6. **Deploy**: `cdk deploy --all` creates all resources with consistent naming
 
 ### Key Decisions & Rationale
 
@@ -99,11 +101,11 @@ To add a new dataset (e.g., `rxnorm`):
 - Query performance for time-based analysis
 - Natural partition pruning for operational queries
 
-**Why Single Stack?**
-- Eliminates cross-stack dependencies
-- Simplified resource management
-- Shared infrastructure reduces costs
-- Easier to maintain consistent patterns
+**Why Core + Dataset Stack Pattern?**
+- Shared infrastructure deployed once, reused across datasets
+- Dataset stacks can be deployed independently 
+- Clear separation of shared vs dataset-specific concerns
+- Scales cleanly as new datasets are added
 
 **Why Bronze-First Approach?**
 - Raw data preserved immutably for reprocessability

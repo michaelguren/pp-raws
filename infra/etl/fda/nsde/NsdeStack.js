@@ -1,5 +1,4 @@
 const cdk = require("aws-cdk-lib");
-const s3 = require("aws-cdk-lib/aws-s3");
 const s3Deploy = require("aws-cdk-lib/aws-s3-deployment");
 const lambda = require("aws-cdk-lib/aws-lambda");
 const glue = require("aws-cdk-lib/aws-glue");
@@ -8,12 +7,22 @@ const sfn = require("aws-cdk-lib/aws-stepfunctions");
 const tasks = require("aws-cdk-lib/aws-stepfunctions-tasks");
 const path = require("path");
 
-class PpDwEtlStack extends cdk.Stack {
+class NsdeStack extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
+    // Import shared ETL infrastructure from EtlCoreStack
+    const bucketName = cdk.Fn.importValue("pp-dw-bucket-name");
+    const glueRoleArn = cdk.Fn.importValue("pp-dw-glue-role-arn");
+    const lambdaRoleArn = cdk.Fn.importValue("pp-dw-lambda-role-arn");
+
+    // Reference existing resources
+    const dataWarehouseBucket = cdk.aws_s3.Bucket.fromBucketName(this, "DataWarehouseBucket", bucketName);
+    const glueRole = iam.Role.fromRoleArn(this, "GlueRole", glueRoleArn);
+    const lambdaRole = iam.Role.fromRoleArn(this, "LambdaRole", lambdaRoleArn);
+
     // Load warehouse and dataset configurations
-    const warehouseConfig = require("../../config/warehouse.json");
+    const warehouseConfig = require("../../../../config/warehouse.json");
     const datasetConfig = require("./config/dataset.json");
     const dataset = datasetConfig.dataset;
     
@@ -22,68 +31,9 @@ class PpDwEtlStack extends cdk.Stack {
       bronzeJob: `${warehouseConfig.warehouse_prefix}-bronze-${dataset}`,
       silverJob: `${warehouseConfig.warehouse_prefix}-silver-${dataset}`,
       bronzeCrawler: `${warehouseConfig.warehouse_prefix}-bronze-${dataset}-crawler`,
-      fetchLambda: `${warehouseConfig.warehouse_prefix}-raw-fetch-${dataset}`,
-      bucket: warehouseConfig.bucket_name_pattern.replace('{account}', this.account)
+      silverCrawler: `${warehouseConfig.warehouse_prefix}-silver-${dataset}-crawler`,
+      fetchLambda: `${warehouseConfig.warehouse_prefix}-raw-fetch-${dataset}`
     };
-
-    // Single data warehouse bucket with prefix-based organization
-    const dataWarehouseBucket = new s3.Bucket(this, "DataWarehouseBucket", {
-      bucketName: resourceNames.bucket,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      lifecycleRules: [
-        {
-          id: "temp-cleanup",
-          prefix: "temp/",
-          expiration: cdk.Duration.days(7),
-        },
-      ],
-    });
-
-    // Simple Glue service role
-    const glueRole = new iam.Role(this, "GlueRole", {
-      assumedBy: new iam.ServicePrincipal("glue.amazonaws.com"),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName(
-          "service-role/AWSGlueServiceRole"
-        ),
-      ],
-    });
-
-    // Grant S3 access to Glue for data warehouse bucket
-    dataWarehouseBucket.grantReadWrite(glueRole);
-
-    // Glue bronze database for Athena queries (shared across all datasets)
-    const bronzeDatabase = new glue.CfnDatabase(this, "BronzeDatabase", {
-      catalogId: this.account,
-      databaseInput: {
-        name: warehouseConfig.bronze_database,
-        description: "Bronze layer database for all datasets"
-      }
-    });
-
-    // Glue silver database for Athena queries (shared across all datasets)
-    const silverDatabase = new glue.CfnDatabase(this, "SilverDatabase", {
-      catalogId: this.account,
-      databaseInput: {
-        name: warehouseConfig.silver_database,
-        description: "Silver layer database for all datasets"
-      }
-    });
-
-    // Simple Lambda execution role
-    const lambdaRole = new iam.Role(this, "LambdaRole", {
-      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName(
-          "service-role/AWSLambdaBasicExecutionRole"
-        ),
-      ],
-    });
-
-    // Grant S3 access to Lambda for data warehouse bucket
-    dataWarehouseBucket.grantReadWrite(lambdaRole);
 
     // Fetch Lambda function
     const fetchLambda = new lambda.Function(this, "FetchLambda", {
@@ -97,7 +47,7 @@ class PpDwEtlStack extends cdk.Stack {
       memorySize: warehouseConfig.lambda_defaults.memory_mb,
       role: lambdaRole,
       environment: {
-        DATA_WAREHOUSE_BUCKET_NAME: dataWarehouseBucket.bucketName,
+        DATA_WAREHOUSE_BUCKET_NAME: bucketName,
         DATASET: dataset,
       },
     });
@@ -109,7 +59,7 @@ class PpDwEtlStack extends cdk.Stack {
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${dataWarehouseBucket.bucketName}/scripts/${dataset}/bronze_job.py`,
+        scriptLocation: `s3://${bucketName}/scripts/${dataset}/bronze_job.py`,
         pythonVersion: warehouseConfig.glue_defaults.python_version,
       },
       glueVersion: warehouseConfig.glue_defaults.version,
@@ -128,7 +78,7 @@ class PpDwEtlStack extends cdk.Stack {
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${dataWarehouseBucket.bucketName}/scripts/${dataset}/silver_job.py`,
+        scriptLocation: `s3://${bucketName}/scripts/${dataset}/silver_job.py`,
         pythonVersion: warehouseConfig.glue_defaults.python_version,
       },
       glueVersion: warehouseConfig.glue_defaults.version,
@@ -149,7 +99,7 @@ class PpDwEtlStack extends cdk.Stack {
       targets: {
         s3Targets: [
           {
-            path: `s3://${dataWarehouseBucket.bucketName}/bronze/${dataset}/`
+            path: `s3://${bucketName}/bronze/${dataset}/`
           }
         ]
       },
@@ -164,13 +114,13 @@ class PpDwEtlStack extends cdk.Stack {
 
     // Silver crawler (for initial table creation only)
     const silverCrawler = new glue.CfnCrawler(this, "SilverCrawler", {
-      name: `${warehouseConfig.warehouse_prefix}-silver-${dataset}-crawler`,
+      name: resourceNames.silverCrawler,
       role: glueRole.roleArn,
       databaseName: warehouseConfig.silver_database,
       targets: {
         s3Targets: [
           {
-            path: `s3://${dataWarehouseBucket.bucketName}/silver/${dataset}/`
+            path: `s3://${bucketName}/silver/${dataset}/`
           }
         ]
       },
@@ -182,10 +132,6 @@ class PpDwEtlStack extends cdk.Stack {
         }
       })
     });
-
-    // Crawlers depend on databases
-    bronzeCrawler.addDependency(bronzeDatabase);
-    silverCrawler.addDependency(silverDatabase);
 
     // Deploy Glue scripts to data warehouse bucket
     new s3Deploy.BucketDeployment(this, "GlueScripts", {
@@ -207,10 +153,8 @@ class PpDwEtlStack extends cdk.Stack {
     const bronzeJobTask = new tasks.GlueStartJobRun(this, "BronzeJobTask", {
       glueJobName: resourceNames.bronzeJob,
       arguments: sfn.TaskInput.fromObject({
-        "--raw_path": sfn.JsonPath.stringAt("$.raw_path"),
-        "--bronze_path": sfn.JsonPath.stringAt("$.bronze_path"), 
         "--run_id": sfn.JsonPath.stringAt("$.run_id"),
-        "--dataset": sfn.JsonPath.stringAt("$.dataset")
+        "--bucket_name": bucketName
       }),
       integrationPattern: sfn.IntegrationPattern.RUN_JOB,
       resultPath: "$.bronzeJobResult"
@@ -219,10 +163,8 @@ class PpDwEtlStack extends cdk.Stack {
     const silverJobTask = new tasks.GlueStartJobRun(this, "SilverJobTask", {
       glueJobName: resourceNames.silverJob,
       arguments: sfn.TaskInput.fromObject({
-        "--bronze_path": sfn.JsonPath.stringAt("$.bronze_path"),
-        "--silver_path": sfn.JsonPath.stringAt("$.silver_path"),
         "--run_id": sfn.JsonPath.stringAt("$.run_id"),
-        "--dataset": sfn.JsonPath.stringAt("$.dataset")
+        "--bucket_name": bucketName
       }),
       integrationPattern: sfn.IntegrationPattern.RUN_JOB,
       resultPath: "$.silverJobResult"
@@ -238,11 +180,6 @@ class PpDwEtlStack extends cdk.Stack {
 
 
     // Outputs
-    new cdk.CfnOutput(this, "DataWarehouseBucketName", {
-      value: dataWarehouseBucket.bucketName,
-      description: "Data warehouse bucket name",
-    });
-
     new cdk.CfnOutput(this, "FetchLambdaArn", {
       value: fetchLambda.functionArn,
       description: "Fetch Lambda ARN",
@@ -264,7 +201,7 @@ class PpDwEtlStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, "SilverCrawlerName", {
-      value: `${warehouseConfig.warehouse_prefix}-silver-${dataset}-crawler`,
+      value: resourceNames.silverCrawler,
       description: "Silver Crawler Name (for initial table creation)",
     });
 
@@ -275,4 +212,4 @@ class PpDwEtlStack extends cdk.Stack {
   }
 }
 
-module.exports = { PpDwEtlStack };
+module.exports = { NsdeStack };
