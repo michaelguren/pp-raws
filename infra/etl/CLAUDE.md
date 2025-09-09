@@ -6,7 +6,7 @@
 We implement a **Bronze → Silver → Gold** medallion architecture for all datasets:
 
 - **Raw Layer**: S3 prefix `raw/{dataset}/` - Original source data (zip, csv) with run-based organization
-- **Bronze Layer**: S3 prefix `bronze/bronze_{dataset}/` - Cleaned, typed parquet with metadata
+- **Bronze Layer**: S3 prefix `bronze/bronze_{dataset}/partition_datetime={timestamp}/` - Cleaned, typed parquet with metadata
 - **Silver Layer**: S3 prefix `silver/silver_{dataset}/` - Business logic, SCD Type 2, deduplication  
 - **Gold Layer**: (Future) Analytics-ready aggregations and marts
 
@@ -21,7 +21,7 @@ All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
 - `pp-dw-bronze-{dataset}-crawler` (e.g., `pp-dw-bronze-nsde-crawler`)
 
 **Lambda Functions:**
-- `pp-dw-fetch-{dataset}` (e.g., `pp-dw-fetch-nsde`)
+- `pp-dw-raw-fetch-{dataset}` (e.g., `pp-dw-raw-fetch-nsde`)
 
 **Databases:**
 - `pp_dw_bronze` (shared across all datasets)
@@ -64,11 +64,11 @@ All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
 ### S3 Organization
 ```
 s3://pp-dw-{account}/
-├── raw/{dataset}/run_id/           # Original source files
-├── bronze/bronze_{dataset}/        # Cleaned parquet, datetime partitioned
-├── silver/silver_{dataset}/        # Business logic applied
-├── gold/{dataset}/                 # (Future) Analytics marts
-└── scripts/{dataset}/              # Glue job scripts
+├── raw/{dataset}/run_id/                              # Original source files
+├── bronze/bronze_{dataset}/partition_datetime={ts}/   # Cleaned parquet, datetime partitioned
+├── silver/silver_{dataset}/                           # Business logic applied
+├── gold/{dataset}/                                    # (Future) Analytics marts
+└── scripts/{dataset}/                                 # Glue job scripts
 ```
 
 ### Configuration Architecture
