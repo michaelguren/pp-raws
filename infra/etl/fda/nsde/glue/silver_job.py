@@ -3,21 +3,20 @@ NSDE Silver Job with SCD Type 2 Implementation
 Reads bronze data and applies SCD Type 2 versioning for change tracking
 """
 import sys
-import boto3
+import boto3  # type: ignore[import-not-found]
 import copy
 import json
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
-from pyspark.sql.functions import (
-    lit, to_date, col, when, concat, lpad, split, trim, upper,
-    current_timestamp, count, md5, coalesce, max as spark_max,
-    row_number, desc, asc, isnan, isnull
+from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
+from pyspark.context import SparkContext  # type: ignore[import-not-found]
+from awsglue.context import GlueContext  # type: ignore[import-not-found]
+from awsglue.job import Job  # type: ignore[import-not-found]
+from pyspark.sql.functions import (  # type: ignore[import-not-found]
+    lit, col, when, concat,
+    current_timestamp, md5, coalesce,
+    row_number, desc
 )
-from pyspark.sql.window import Window
-from pyspark.sql.types import BooleanType, StringType
-from datetime import datetime, date
+from pyspark.sql.window import Window  # type: ignore[import-not-found]
+from datetime import datetime
 
 # Get job parameters - only runtime essentials
 args = getResolvedOptions(sys.argv, ['JOB_NAME', 'run_id', 'bucket_name'])
@@ -55,7 +54,7 @@ dataset_config = json.loads(
 dataset = dataset_config['dataset']
 bronze_database = warehouse_config['bronze_database']
 silver_database = warehouse_config['silver_database']
-process_date = datetime.utcnow().strftime('%Y-%m-%d')
+process_date = datetime.now().strftime('%Y-%m-%d')
 
 # Build paths from config - read from latest bronze partition
 bronze_path = f"s3://{bucket_name}/bronze/bronze_{dataset}/partition_datetime={run_id}/"

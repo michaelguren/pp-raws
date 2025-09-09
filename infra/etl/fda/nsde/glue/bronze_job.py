@@ -3,16 +3,14 @@ Simple NSDE Bronze Job - minimal dependencies
 Reads raw CSV from S3 and converts to Parquet
 """
 import sys
-import boto3
+import boto3  # type: ignore[import-not-found]
 import copy
 import json
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
-from pyspark.sql.functions import lit, current_timestamp, col, regexp_replace, when, to_date
-from pyspark.sql.types import IntegerType, DateType
-from datetime import datetime
+from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
+from pyspark.context import SparkContext  # type: ignore[import-not-found]
+from awsglue.context import GlueContext  # type: ignore[import-not-found]
+from awsglue.job import Job  # type: ignore[import-not-found]
+from pyspark.sql.functions import lit, current_timestamp, col, when, to_date  # type: ignore[import-not-found]
 
 # Get job parameters - only runtime essentials
 args = getResolvedOptions(sys.argv, ['JOB_NAME', 'run_id', 'bucket_name'])
