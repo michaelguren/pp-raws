@@ -22,7 +22,7 @@ class NsdeStack extends cdk.Stack {
     const lambdaRole = iam.Role.fromRoleArn(this, "LambdaRole", lambdaRoleArn);
 
     // Load warehouse and dataset configurations
-    const warehouseConfig = require("../../../../config/warehouse.json");
+    const warehouseConfig = require("../../config/warehouse.json");
     const datasetConfig = require("./config/dataset.json");
     const dataset = datasetConfig.dataset;
     
