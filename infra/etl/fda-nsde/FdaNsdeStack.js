@@ -22,7 +22,7 @@ class FdaNsdeStack extends cdk.Stack {
     const lambdaRole = iam.Role.fromRoleArn(this, "LambdaRole", lambdaRoleArn);
 
     // Load warehouse and dataset configurations
-    const warehouseConfig = require("../../config/warehouse.json");
+    const warehouseConfig = require("../config.json");
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
     
@@ -156,14 +156,17 @@ class FdaNsdeStack extends cdk.Stack {
 
     // Deploy warehouse config to S3
     new s3Deploy.BucketDeployment(this, "WarehouseConfig", {
-      sources: [s3Deploy.Source.asset(path.join(__dirname, "../../config"))],
+      sources: [s3Deploy.Source.asset(path.join(__dirname, ".."), {
+        exclude: ["fda-nsde/**", "*.js", "EtlCoreStack.js"]
+      })],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `${warehouseConfig.etl_assets_prefix}/config/`
+      destinationKeyPrefix: `${warehouseConfig.etl_assets_prefix}/`
     });
 
     // Deploy dataset config to S3
     new s3Deploy.BucketDeployment(this, "DatasetConfig", {
-      sources: [s3Deploy.Source.asset(path.join(__dirname, "config"))],
+      sources: [s3Deploy.Source.asset(path.join(__dirname))],
+      include: ["config.json"],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: `${warehouseConfig.etl_assets_prefix}/${dataset}/`
     });

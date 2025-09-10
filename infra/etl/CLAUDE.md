@@ -70,13 +70,13 @@ s3://pp-dw-{account}/
 ├── silver/silver_{dataset}/                           # Business logic applied
 ├── gold/{dataset}/                                    # (Future) Analytics marts
 └── etl/                                                # ETL assets (configs, scripts)
-    ├── config/warehouse.json                          # Warehouse-level configuration
+    ├── config.json                                    # Warehouse-level configuration
     ├── {dataset}/config.json                          # Dataset-specific configuration
     └── {dataset}/                                     # Glue job scripts
 ```
 
 ### Configuration Architecture
-**ETL-level config** (`./config/warehouse.json`):
+**ETL-level config** (`./config.json`):
 - Warehouse naming conventions and prefixes
 - Shared database names (`pp_dw_bronze`, `pp_dw_silver`, `pp_dw_gold`)
 - S3 path patterns for each layer (configurable, not hardcoded)

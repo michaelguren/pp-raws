@@ -8,7 +8,7 @@ class EtlCoreStack extends cdk.Stack {
     super(scope, id, props);
 
     // Load warehouse configuration
-    const warehouseConfig = require("./config/warehouse.json");
+    const warehouseConfig = require("./config.json");
     
     // Single data warehouse bucket with prefix-based organization
     const dataWarehouseBucket = new s3.Bucket(this, "DataWarehouseBucket", {
