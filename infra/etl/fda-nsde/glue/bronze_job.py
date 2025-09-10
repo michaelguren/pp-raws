@@ -31,7 +31,7 @@ bucket_name = args['bucket_name']
 run_id = args['run_id']
 
 # Load warehouse config from fixed location
-warehouse_config_key = 'etl/config/warehouse.json'
+warehouse_config_key = 'etl/config.json'
 warehouse_config = json.loads(
     s3_client.get_object(Bucket=bucket_name, Key=warehouse_config_key)['Body'].read()
 )
@@ -39,14 +39,15 @@ warehouse_config = json.loads(
 # Now use the prefix from config for other paths
 etl_prefix = warehouse_config.get('etl_assets_prefix', 'etl')
 
+# Extract dataset name from job name (pp-dw-bronze-{dataset})
+job_name = args['JOB_NAME']
+dataset = job_name.split('-')[-1] if job_name.startswith('pp-dw-bronze-') else 'fda-nsde'
+
 # Load dataset config using the prefix
 dataset_config_key = f'{etl_prefix}/{dataset}/config.json'
 dataset_config = json.loads(
     s3_client.get_object(Bucket=bucket_name, Key=dataset_config_key)['Body'].read()
 )
-
-# Extract configuration values
-dataset = dataset_config['dataset']
 date_format = dataset_config['date_format']
 bronze_database = warehouse_config['bronze_database']
 
