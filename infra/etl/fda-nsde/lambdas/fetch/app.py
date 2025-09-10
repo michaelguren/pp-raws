@@ -9,7 +9,7 @@ import time
 import logging
 import boto3
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -40,10 +40,10 @@ def handler(event, context):
         bucket = os.environ.get('DATA_WAREHOUSE_BUCKET_NAME')
         
         # Generate run_id if not provided
-        run_id = event.get('run_id') or f"{dataset}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        run_id = f"{dataset}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
         
         # Get current datetime for partitioning (allows multiple runs per day)
-        partition_datetime = datetime.utcnow().strftime('%Y-%m-%d-%H%M%S')
+        partition_datetime = datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M%S')
         
         logger.info(f"Processing {dataset} from {source_url}")
         

@@ -2,7 +2,7 @@
 
 const cdk = require('aws-cdk-lib');
 const { EtlCoreStack } = require('./etl/EtlCoreStack');
-const { NsdeStack } = require('./etl/fda/nsde/NsdeStack');
+const { FdaNsdeStack } = require('./etl/fda-nsde/FdaNsdeStack');
 
 const app = new cdk.App();
 
@@ -17,7 +17,7 @@ const etlCoreStack = new EtlCoreStack(app, 'pp-dw-etl-core', {
 });
 
 // Dataset-specific ETL stacks
-const nsdeStack = new NsdeStack(app, 'pp-dw-etl-nsde', {
+const fdaNsdeStack = new FdaNsdeStack(app, 'pp-dw-etl-fda-nsde', {
   description: 'FDA NSDE dataset ETL pipeline',
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
@@ -26,7 +26,7 @@ const nsdeStack = new NsdeStack(app, 'pp-dw-etl-nsde', {
 });
 
 // Ensure NSDE stack depends on core infrastructure
-nsdeStack.addDependency(etlCoreStack);
+fdaNsdeStack.addDependency(etlCoreStack);
 
 // ===== API Infrastructure =====
 // Future: API Gateway, Lambda functions, DynamoDB tables

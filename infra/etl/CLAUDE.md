@@ -69,28 +69,36 @@ s3://pp-dw-{account}/
 ├── bronze/bronze_{dataset}/partition_datetime={ts}/   # Cleaned parquet, datetime partitioned
 ├── silver/silver_{dataset}/                           # Business logic applied
 ├── gold/{dataset}/                                    # (Future) Analytics marts
-└── scripts/{dataset}/                                 # Glue job scripts
+└── etl/                                                # ETL assets (configs, scripts)
+    ├── config/warehouse.json                          # Warehouse-level configuration
+    ├── {dataset}/config.json                          # Dataset-specific configuration
+    └── {dataset}/                                     # Glue job scripts
 ```
 
 ### Configuration Architecture
 **ETL-level config** (`./config/warehouse.json`):
 - Warehouse naming conventions and prefixes
 - Shared database names (`pp_dw_bronze`, `pp_dw_silver`, `pp_dw_gold`)
-- Default Glue/Lambda settings (versions, timeouts, worker types)
+- S3 path patterns for each layer (configurable, not hardcoded)
+- Worker configurations by data size (small, medium, large, xlarge)
+- Default Glue settings (version, python, timeouts)
 
 **Dataset-specific config** (`./fda/{dataset}/config/dataset.json`):
-- Dataset name, source URL, description  
+- Dataset name, source URL, description
+- `data_size_category`: Determines Glue worker allocation (small/medium/large/xlarge)
+- Business key for SCD Type 2 tracking
 - Dataset-specific settings (schedules, data quality rules)
 
 Resource names are **dynamically constructed** from warehouse conventions + dataset name, ensuring DRY principles.
 
 ### Adding New Datasets
-To add a new dataset (e.g., `rxnorm`):
+To add a new dataset (e.g., `fda-rxnorm`):
 
-1. **Create dataset config**: `./fda/rxnorm/config/dataset.json`
-2. **Add Lambda function**: `./fda/rxnorm/lambdas/fetch/app.py`
-3. **Create Glue jobs**: `./fda/rxnorm/glue/{bronze,silver}_job.py`
-4. **Create dataset stack**: `./fda/rxnorm/RxnormStack.js` (copy from NsdeStack pattern)
+1. **Create dataset config**: `./fda-rxnorm/config.json`
+   - Set appropriate `data_size_category` based on expected data volume
+2. **Add Lambda function**: `./fda-rxnorm/lambdas/fetch/app.py`
+3. **Create Glue jobs**: `./fda-rxnorm/glue/{bronze,silver}_job.py`
+4. **Create dataset stack**: `./fda-rxnorm/FdaRxnormStack.js` (copy from FdaNsdeStack pattern)
 5. **Update index.js**: Add new stack instantiation with dependency on EtlCoreStack
 6. **Deploy**: `cdk deploy --all` creates all resources with consistent naming
 
@@ -121,11 +129,13 @@ To add a new dataset (e.g., `rxnorm`):
 
 ### Data Processing Flow
 ```
-Source API/File → Fetch Lambda → S3 Raw → Bronze Job → S3 Bronze → 
+Step Function (auto-generates run_id) → Fetch Lambda → S3 Raw → Bronze Job → S3 Bronze → 
 Silver Job → S3 Silver → Athena Tables → Analytics
 ```
 
-Each step maintains lineage through `meta_run_id` for full traceability.
+- **No manual input required**: Step Function auto-generates `run_id` timestamp
+- **Each step maintains lineage** through `meta_run_id` for full traceability
+- **Worker sizing is automatic** based on dataset's `data_size_category`
 
 ### Autonomous Table Creation & Partition Management
 
@@ -151,8 +161,14 @@ Each step maintains lineage through `meta_run_id` for full traceability.
 - Only invoked automatically by jobs when tables don't exist
 - After first run, all partition management is direct API calls
 
+### Performance Optimization
+**Worker Configuration by Data Size (AWS Best Practices):**
+- **Small** (<100MB): G.1X with 2 workers - Minimum viable configuration
+- **Medium** (100MB-1GB): G.1X with 5 workers - Optimal for 5-10 DPU recommendation
+- **Large** (1GB-5GB): G.1X with 10 workers - Horizontal scaling for parallelism
+- **XLarge** (>5GB): G.2X with 10 workers - Vertical + horizontal scaling for memory-intensive workloads
+
 ### Future Considerations
-- **Auto-scaling**: Glue jobs configured for burst capacity
 - **Cost optimization**: Lifecycle rules for old raw data
 - **Security**: Least-privilege IAM, encryption at rest/transit
 - **Monitoring**: CloudWatch metrics and alerts for job failures

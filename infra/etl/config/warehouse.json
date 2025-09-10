@@ -4,13 +4,40 @@
   "silver_database": "pp_dw_silver", 
   "gold_database": "pp_dw_gold",
   "bucket_name_pattern": "pp-dw-{account}",
+  "etl_assets_prefix": "etl",
+  "path_patterns": {
+    "raw": "raw/{dataset}/run_id={run_id}/",
+    "bronze": "bronze/bronze_{dataset}/",
+    "silver": "silver/silver_{dataset}/",
+    "gold": "gold/gold_{dataset}/"
+  },
   "glue_defaults": {
     "version": "4.0",
     "python_version": "3",
-    "worker_type": "G.1X",
-    "number_of_workers": 3,
     "timeout_minutes": 30,
     "max_retries": 1
+  },
+  "glue_worker_configs": {
+    "small": {
+      "worker_type": "G.1X",
+      "number_of_workers": 2,
+      "description": "For datasets < 100MB - minimum viable configuration"
+    },
+    "medium": {
+      "worker_type": "G.1X",
+      "number_of_workers": 5,
+      "description": "For datasets 100MB - 1GB - optimal for medium files"
+    },
+    "large": {
+      "worker_type": "G.1X",
+      "number_of_workers": 10,
+      "description": "For datasets 1GB - 5GB - horizontal scaling for parallelism"
+    },
+    "xlarge": {
+      "worker_type": "G.2X",
+      "number_of_workers": 10,
+      "description": "For datasets > 5GB - vertical + horizontal scaling"
+    }
   },
   "lambda_defaults": {
     "runtime": "python3.12",

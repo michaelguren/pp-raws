@@ -30,14 +30,17 @@ s3_client = boto3.client('s3')
 bucket_name = args['bucket_name']
 run_id = args['run_id']
 
-# Load warehouse config
-warehouse_config_key = 'scripts/config/warehouse.json'
+# Load warehouse config from fixed location
+warehouse_config_key = 'etl/config/warehouse.json'
 warehouse_config = json.loads(
     s3_client.get_object(Bucket=bucket_name, Key=warehouse_config_key)['Body'].read()
 )
 
-# Load dataset config  
-dataset_config_key = 'scripts/fda/nsde/config/dataset.json'
+# Now use the prefix from config for other paths
+etl_prefix = warehouse_config.get('etl_assets_prefix', 'etl')
+
+# Load dataset config using the prefix
+dataset_config_key = f'{etl_prefix}/{dataset}/config.json'
 dataset_config = json.loads(
     s3_client.get_object(Bucket=bucket_name, Key=dataset_config_key)['Body'].read()
 )
@@ -47,9 +50,12 @@ dataset = dataset_config['dataset']
 date_format = dataset_config['date_format']
 bronze_database = warehouse_config['bronze_database']
 
-# Build paths from config
-raw_path = f"s3://{bucket_name}/raw/{dataset}/run_id={run_id}/"
-bronze_path = f"s3://{bucket_name}/bronze/bronze_{dataset}/partition_datetime={run_id}/"
+# Build paths from config patterns
+raw_pattern = warehouse_config['path_patterns']['raw']
+bronze_pattern = warehouse_config['path_patterns']['bronze']
+
+raw_path = f"s3://{bucket_name}/{raw_pattern.replace('{dataset}', dataset).replace('{run_id}', run_id)}"
+bronze_path = f"s3://{bucket_name}/{bronze_pattern.replace('{dataset}', dataset)}partition_datetime={run_id}/"
 
 print(f"Starting Bronze ETL for {dataset}")
 print(f"Raw path: {raw_path}")

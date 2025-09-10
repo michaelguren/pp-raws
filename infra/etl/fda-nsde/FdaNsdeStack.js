@@ -7,7 +7,7 @@ const sfn = require("aws-cdk-lib/aws-stepfunctions");
 const tasks = require("aws-cdk-lib/aws-stepfunctions-tasks");
 const path = require("path");
 
-class NsdeStack extends cdk.Stack {
+class FdaNsdeStack extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
@@ -23,7 +23,7 @@ class NsdeStack extends cdk.Stack {
 
     // Load warehouse and dataset configurations
     const warehouseConfig = require("../../config/warehouse.json");
-    const datasetConfig = require("./config/dataset.json");
+    const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
     
     // Construct resource names from warehouse conventions
@@ -53,18 +53,28 @@ class NsdeStack extends cdk.Stack {
     });
 
 
+    // Get worker config based on dataset size category
+    const sizeCategory = datasetConfig.data_size_category || 'medium';
+    const workerConfig = warehouseConfig.glue_worker_configs[sizeCategory];
+    
+    if (!workerConfig) {
+      throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
+    }
+    
+    console.log(`Using ${sizeCategory} worker config for ${dataset}: ${workerConfig.description}`);
+
     // Bronze Glue job
     const bronzeJob = new glue.CfnJob(this, "BronzeJob", {
       name: resourceNames.bronzeJob,
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${bucketName}/scripts/${dataset}/bronze_job.py`,
+        scriptLocation: `s3://${bucketName}/${warehouseConfig.etl_assets_prefix}/${dataset}/bronze_job.py`,
         pythonVersion: warehouseConfig.glue_defaults.python_version,
       },
       glueVersion: warehouseConfig.glue_defaults.version,
-      workerType: warehouseConfig.glue_defaults.worker_type,
-      numberOfWorkers: warehouseConfig.glue_defaults.number_of_workers,
+      workerType: workerConfig.worker_type,
+      numberOfWorkers: workerConfig.number_of_workers,
       maxRetries: warehouseConfig.glue_defaults.max_retries,
       timeout: warehouseConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
@@ -78,18 +88,22 @@ class NsdeStack extends cdk.Stack {
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${bucketName}/scripts/${dataset}/silver_job.py`,
+        scriptLocation: `s3://${bucketName}/${warehouseConfig.etl_assets_prefix}/${dataset}/silver_job.py`,
         pythonVersion: warehouseConfig.glue_defaults.python_version,
       },
       glueVersion: warehouseConfig.glue_defaults.version,
-      workerType: warehouseConfig.glue_defaults.worker_type,
-      numberOfWorkers: warehouseConfig.glue_defaults.number_of_workers,
+      workerType: workerConfig.worker_type,
+      numberOfWorkers: workerConfig.number_of_workers,
       maxRetries: warehouseConfig.glue_defaults.max_retries,
       timeout: warehouseConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
       },
     });
+
+    // Build S3 paths from warehouse config patterns
+    const bronzePath = warehouseConfig.path_patterns.bronze.replace('{dataset}', dataset);
+    const silverPath = warehouseConfig.path_patterns.silver.replace('{dataset}', dataset);
 
     // Bronze crawler (auto-discovers schema from parquet files)
     const bronzeCrawler = new glue.CfnCrawler(this, "BronzeCrawler", {
@@ -99,7 +113,7 @@ class NsdeStack extends cdk.Stack {
       targets: {
         s3Targets: [
           {
-            path: `s3://${bucketName}/bronze/${dataset}/`
+            path: `s3://${bucketName}/${bronzePath}`
           }
         ]
       },
@@ -120,7 +134,7 @@ class NsdeStack extends cdk.Stack {
       targets: {
         s3Targets: [
           {
-            path: `s3://${bucketName}/silver/${dataset}/`
+            path: `s3://${bucketName}/${silverPath}`
           }
         ]
       },
@@ -137,21 +151,21 @@ class NsdeStack extends cdk.Stack {
     new s3Deploy.BucketDeployment(this, "GlueScripts", {
       sources: [s3Deploy.Source.asset(path.join(__dirname, "glue"))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `scripts/${dataset}/`
+      destinationKeyPrefix: `${warehouseConfig.etl_assets_prefix}/${dataset}/`
     });
 
     // Deploy warehouse config to S3
     new s3Deploy.BucketDeployment(this, "WarehouseConfig", {
       sources: [s3Deploy.Source.asset(path.join(__dirname, "../../config"))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: "scripts/config/"
+      destinationKeyPrefix: `${warehouseConfig.etl_assets_prefix}/config/`
     });
 
     // Deploy dataset config to S3
     new s3Deploy.BucketDeployment(this, "DatasetConfig", {
       sources: [s3Deploy.Source.asset(path.join(__dirname, "config"))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `scripts/fda/${dataset}/config/`
+      destinationKeyPrefix: `${warehouseConfig.etl_assets_prefix}/${dataset}/`
     });
 
     // Step Functions workflow for orchestration
@@ -226,4 +240,4 @@ class NsdeStack extends cdk.Stack {
   }
 }
 
-module.exports = { NsdeStack };
+module.exports = { FdaNsdeStack };
