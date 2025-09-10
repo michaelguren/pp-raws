@@ -22,17 +22,17 @@ class FdaNsdeStack extends cdk.Stack {
     const lambdaRole = iam.Role.fromRoleArn(this, "LambdaRole", lambdaRoleArn);
 
     // Load warehouse and dataset configurations
-    const warehouseConfig = require("../config.json");
+    const etlConfig = require("../config.json");
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
     
     // Construct resource names from warehouse conventions
     const resourceNames = {
-      bronzeJob: `${warehouseConfig.warehouse_prefix}-bronze-${dataset}`,
-      silverJob: `${warehouseConfig.warehouse_prefix}-silver-${dataset}`,
-      bronzeCrawler: `${warehouseConfig.warehouse_prefix}-bronze-${dataset}-crawler`,
-      silverCrawler: `${warehouseConfig.warehouse_prefix}-silver-${dataset}-crawler`,
-      fetchLambda: `${warehouseConfig.warehouse_prefix}-raw-fetch-${dataset}`
+      bronzeJob: `${etlConfig.warehouse_prefix}-bronze-${dataset}`,
+      silverJob: `${etlConfig.warehouse_prefix}-silver-${dataset}`,
+      bronzeCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-crawler`,
+      silverCrawler: `${etlConfig.warehouse_prefix}-silver-${dataset}-crawler`,
+      fetchLambda: `${etlConfig.warehouse_prefix}-raw-fetch-${dataset}`
     };
 
     // Fetch Lambda function
@@ -43,8 +43,8 @@ class FdaNsdeStack extends cdk.Stack {
       code: lambda.Code.fromAsset(
         path.join(__dirname, "lambdas/fetch")
       ),
-      timeout: cdk.Duration.seconds(warehouseConfig.lambda_defaults.timeout_seconds),
-      memorySize: warehouseConfig.lambda_defaults.memory_mb,
+      timeout: cdk.Duration.seconds(etlConfig.lambda_defaults.timeout_seconds),
+      memorySize: etlConfig.lambda_defaults.memory_mb,
       role: lambdaRole,
       environment: {
         DATA_WAREHOUSE_BUCKET_NAME: bucketName,
@@ -55,13 +55,11 @@ class FdaNsdeStack extends cdk.Stack {
 
     // Get worker config based on dataset size category
     const sizeCategory = datasetConfig.data_size_category || 'medium';
-    const workerConfig = warehouseConfig.glue_worker_configs[sizeCategory];
+    const workerConfig = etlConfig.glue_worker_configs[sizeCategory];
     
     if (!workerConfig) {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
-    
-    console.log(`Using ${sizeCategory} worker config for ${dataset}: ${workerConfig.description}`);
 
     // Bronze Glue job
     const bronzeJob = new glue.CfnJob(this, "BronzeJob", {
@@ -69,14 +67,14 @@ class FdaNsdeStack extends cdk.Stack {
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${bucketName}/${warehouseConfig.etl_assets_prefix}/${dataset}/bronze_job.py`,
-        pythonVersion: warehouseConfig.glue_defaults.python_version,
+        scriptLocation: `s3://${bucketName}/${etlConfig.path_patterns.bronze_script.replace('{dataset}', dataset)}`,
+        pythonVersion: etlConfig.glue_defaults.python_version,
       },
-      glueVersion: warehouseConfig.glue_defaults.version,
+      glueVersion: etlConfig.glue_defaults.version,
       workerType: workerConfig.worker_type,
       numberOfWorkers: workerConfig.number_of_workers,
-      maxRetries: warehouseConfig.glue_defaults.max_retries,
-      timeout: warehouseConfig.glue_defaults.timeout_minutes,
+      maxRetries: etlConfig.glue_defaults.max_retries,
+      timeout: etlConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
       },
@@ -88,28 +86,28 @@ class FdaNsdeStack extends cdk.Stack {
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${bucketName}/${warehouseConfig.etl_assets_prefix}/${dataset}/silver_job.py`,
-        pythonVersion: warehouseConfig.glue_defaults.python_version,
+        scriptLocation: `s3://${bucketName}/${etlConfig.path_patterns.silver_script.replace('{dataset}', dataset)}`,
+        pythonVersion: etlConfig.glue_defaults.python_version,
       },
-      glueVersion: warehouseConfig.glue_defaults.version,
+      glueVersion: etlConfig.glue_defaults.version,
       workerType: workerConfig.worker_type,
       numberOfWorkers: workerConfig.number_of_workers,
-      maxRetries: warehouseConfig.glue_defaults.max_retries,
-      timeout: warehouseConfig.glue_defaults.timeout_minutes,
+      maxRetries: etlConfig.glue_defaults.max_retries,
+      timeout: etlConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
       },
     });
 
     // Build S3 paths from warehouse config patterns
-    const bronzePath = warehouseConfig.path_patterns.bronze.replace('{dataset}', dataset);
-    const silverPath = warehouseConfig.path_patterns.silver.replace('{dataset}', dataset);
+    const bronzePath = etlConfig.path_patterns.bronze.replace('{dataset}', dataset);
+    const silverPath = etlConfig.path_patterns.silver.replace('{dataset}', dataset);
 
     // Bronze crawler (auto-discovers schema from parquet files)
     const bronzeCrawler = new glue.CfnCrawler(this, "BronzeCrawler", {
       name: resourceNames.bronzeCrawler,
       role: glueRole.roleArn,
-      databaseName: warehouseConfig.bronze_database,
+      databaseName: etlConfig.bronze_database,
       targets: {
         s3Targets: [
           {
@@ -130,7 +128,7 @@ class FdaNsdeStack extends cdk.Stack {
     const silverCrawler = new glue.CfnCrawler(this, "SilverCrawler", {
       name: resourceNames.silverCrawler,
       role: glueRole.roleArn,
-      databaseName: warehouseConfig.silver_database,
+      databaseName: etlConfig.silver_database,
       targets: {
         s3Targets: [
           {
@@ -151,7 +149,7 @@ class FdaNsdeStack extends cdk.Stack {
     new s3Deploy.BucketDeployment(this, "GlueScripts", {
       sources: [s3Deploy.Source.asset(path.join(__dirname, "glue"))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `${warehouseConfig.etl_assets_prefix}/${dataset}/`
+      destinationKeyPrefix: `etl/${dataset}/`
     });
 
     // Deploy warehouse config to S3
@@ -160,7 +158,7 @@ class FdaNsdeStack extends cdk.Stack {
         exclude: ["fda-nsde/**", "*.js", "EtlCoreStack.js"]
       })],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `${warehouseConfig.etl_assets_prefix}/`
+      destinationKeyPrefix: `etl/`
     });
 
     // Deploy dataset config to S3
@@ -168,7 +166,7 @@ class FdaNsdeStack extends cdk.Stack {
       sources: [s3Deploy.Source.asset(path.join(__dirname))],
       include: ["config.json"],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `${warehouseConfig.etl_assets_prefix}/${dataset}/`
+      destinationKeyPrefix: `etl/${dataset}/`
     });
 
     // Step Functions workflow for orchestration
@@ -205,7 +203,7 @@ class FdaNsdeStack extends cdk.Stack {
 
     const stateMachine = new sfn.StateMachine(this, "EtlPipeline", {
       definitionBody: sfn.DefinitionBody.fromChainable(definition),
-      stateMachineName: `${warehouseConfig.warehouse_prefix}-pipeline-${dataset}`,
+      stateMachineName: `${etlConfig.warehouse_prefix}-pipeline-${dataset}`,
       timeout: cdk.Duration.minutes(30)
     });
 
