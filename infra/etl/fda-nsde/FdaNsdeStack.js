@@ -1,5 +1,4 @@
 const cdk = require("aws-cdk-lib");
-const s3Deploy = require("aws-cdk-lib/aws-s3-deployment");
 const lambda = require("aws-cdk-lib/aws-lambda");
 const glue = require("aws-cdk-lib/aws-glue");
 const iam = require("aws-cdk-lib/aws-iam");
@@ -17,7 +16,6 @@ class FdaNsdeStack extends cdk.Stack {
     const lambdaRoleArn = cdk.Fn.importValue("pp-dw-lambda-role-arn");
 
     // Reference existing resources
-    const dataWarehouseBucket = cdk.aws_s3.Bucket.fromBucketName(this, "DataWarehouseBucket", bucketName);
     const glueRole = iam.Role.fromRoleArn(this, "GlueRole", glueRoleArn);
     const lambdaRole = iam.Role.fromRoleArn(this, "LambdaRole", lambdaRoleArn);
 
@@ -61,8 +59,17 @@ class FdaNsdeStack extends cdk.Stack {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
 
+    // Build S3 paths from warehouse config patterns
+    const bronzePath = etlConfig.path_patterns.bronze.replace('{dataset}', dataset);
+    const silverPath = etlConfig.path_patterns.silver.replace('{dataset}', dataset);
+    
+    // Pre-compute simple S3 base paths for Glue jobs
+    const rawBasePath = `s3://${bucketName}/raw/${dataset}/`;
+    const bronzeBasePath = `s3://${bucketName}/bronze/bronze_${dataset}/`;
+    const silverBasePath = `s3://${bucketName}/silver/silver_${dataset}/`;
+
     // Bronze Glue job
-    const bronzeJob = new glue.CfnJob(this, "BronzeJob", {
+    new glue.CfnJob(this, "BronzeJob", {
       name: resourceNames.bronzeJob,
       role: glueRole.roleArn,
       command: {
@@ -77,11 +84,24 @@ class FdaNsdeStack extends cdk.Stack {
       timeout: etlConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
+        "--bronze_database": etlConfig.bronze_database,
+        "--silver_database": etlConfig.silver_database,
+        "--warehouse_prefix": etlConfig.warehouse_prefix,
+        "--raw_base_path": rawBasePath,
+        "--bronze_base_path": bronzeBasePath,
+        "--silver_base_path": silverBasePath,
+        "--business_key": datasetConfig.business_key,
+        "--date_format": datasetConfig.date_format,
+        "--bronze_crawler_name": resourceNames.bronzeCrawler,
+        "--partition_key": "partition_datetime",
+        "--compression_codec": "zstd",
+        "--crawler_timeout_seconds": "600",
+        "--crawler_check_interval": "30",
       },
     });
 
     // Silver Glue job
-    const silverJob = new glue.CfnJob(this, "SilverJob", {
+    new glue.CfnJob(this, "SilverJob", {
       name: resourceNames.silverJob,
       role: glueRole.roleArn,
       command: {
@@ -96,15 +116,27 @@ class FdaNsdeStack extends cdk.Stack {
       timeout: etlConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
+        "--bronze_database": etlConfig.bronze_database,
+        "--silver_database": etlConfig.silver_database,
+        "--warehouse_prefix": etlConfig.warehouse_prefix,
+        "--raw_base_path": rawBasePath,
+        "--bronze_base_path": bronzeBasePath,
+        "--silver_base_path": silverBasePath,
+        "--business_key": datasetConfig.business_key,
+        "--date_format": datasetConfig.date_format,
+        "--silver_crawler_name": resourceNames.silverCrawler,
+        "--partition_key": "effective_year_month",
+        "--compression_codec": "zstd",
+        "--crawler_timeout_seconds": "600",
+        "--crawler_check_interval": "30",
+        "--scd_end_date": "9999-12-31",
+        "--spark_adaptive_enabled": "true",
+        "--spark_adaptive_coalesce": "true",
       },
     });
 
-    // Build S3 paths from warehouse config patterns
-    const bronzePath = etlConfig.path_patterns.bronze.replace('{dataset}', dataset);
-    const silverPath = etlConfig.path_patterns.silver.replace('{dataset}', dataset);
-
     // Bronze crawler (auto-discovers schema from parquet files)
-    const bronzeCrawler = new glue.CfnCrawler(this, "BronzeCrawler", {
+    new glue.CfnCrawler(this, "BronzeCrawler", {
       name: resourceNames.bronzeCrawler,
       role: glueRole.roleArn,
       databaseName: etlConfig.bronze_database,
@@ -125,7 +157,7 @@ class FdaNsdeStack extends cdk.Stack {
     });
 
     // Silver crawler (for initial table creation only)
-    const silverCrawler = new glue.CfnCrawler(this, "SilverCrawler", {
+    new glue.CfnCrawler(this, "SilverCrawler", {
       name: resourceNames.silverCrawler,
       role: glueRole.roleArn,
       databaseName: etlConfig.silver_database,
@@ -145,29 +177,7 @@ class FdaNsdeStack extends cdk.Stack {
       })
     });
 
-    // Deploy Glue scripts to data warehouse bucket
-    new s3Deploy.BucketDeployment(this, "GlueScripts", {
-      sources: [s3Deploy.Source.asset(path.join(__dirname, "glue"))],
-      destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `etl/${dataset}/`
-    });
-
-    // Deploy warehouse config to S3
-    new s3Deploy.BucketDeployment(this, "WarehouseConfig", {
-      sources: [s3Deploy.Source.asset(path.join(__dirname, ".."), {
-        exclude: ["fda-nsde/**", "*.js", "EtlCoreStack.js"]
-      })],
-      destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `etl/`
-    });
-
-    // Deploy dataset config to S3
-    new s3Deploy.BucketDeployment(this, "DatasetConfig", {
-      sources: [s3Deploy.Source.asset(path.join(__dirname))],
-      include: ["config.json"],
-      destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `etl/${dataset}/`
-    });
+    // All configuration now passed via Glue job arguments - no S3 deployments needed
 
     // Step Functions workflow for orchestration
     const fetchTask = new tasks.LambdaInvoke(this, "FetchTask", {

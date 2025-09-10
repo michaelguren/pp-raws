@@ -5,7 +5,6 @@ Reads raw CSV from S3 and converts to Parquet
 import sys
 import boto3  # type: ignore[import-not-found]
 import copy
-import json
 from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
@@ -13,7 +12,13 @@ from awsglue.job import Job  # type: ignore[import-not-found]
 from pyspark.sql.functions import lit, current_timestamp, col, when, to_date  # type: ignore[import-not-found]
 
 # Get job parameters - only runtime essentials
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'run_id', 'bucket_name'])
+args = getResolvedOptions(sys.argv, [
+    'JOB_NAME', 'run_id', 'bucket_name', 'dataset',
+    'bronze_database', 'warehouse_prefix', 'raw_base_path', 
+    'bronze_base_path', 'date_format', 'bronze_crawler_name',
+    'partition_key', 'compression_codec', 'crawler_timeout_seconds', 
+    'crawler_check_interval'
+])
 
 # Initialize Glue
 sc = SparkContext()
@@ -23,40 +28,27 @@ job = Job(glueContext)
 job.init(args['JOB_NAME'], args)
 
 # Configure Spark
-spark.conf.set("spark.sql.parquet.compression.codec", "zstd")
+spark.conf.set("spark.sql.parquet.compression.codec", args['compression_codec'])
 
-# Load configuration
-s3_client = boto3.client('s3')
+# Get configuration from job arguments (passed from CDK)
 bucket_name = args['bucket_name']
 run_id = args['run_id']
+dataset = args['dataset']
+bronze_database = args['bronze_database']
+warehouse_prefix = args['warehouse_prefix']
+date_format = args['date_format']
+bronze_crawler_name = args['bronze_crawler_name']
+partition_key = args['partition_key']
+compression_codec = args['compression_codec']
+crawler_timeout_seconds = int(args['crawler_timeout_seconds'])
+crawler_check_interval = int(args['crawler_check_interval'])
 
-# Load warehouse config from fixed location
-warehouse_config_key = 'etl/config.json'
-warehouse_config = json.loads(
-    s3_client.get_object(Bucket=bucket_name, Key=warehouse_config_key)['Body'].read()
-)
+# Build paths from pre-computed base paths
+raw_base_path = args['raw_base_path']
+bronze_base_path = args['bronze_base_path']
 
-# Now use the prefix from config for other paths
-etl_prefix = warehouse_config.get('etl_assets_prefix', 'etl')
-
-# Extract dataset name from job name (pp-dw-bronze-{dataset})
-job_name = args['JOB_NAME']
-dataset = job_name.split('-')[-1] if job_name.startswith('pp-dw-bronze-') else 'fda-nsde'
-
-# Load dataset config using the prefix
-dataset_config_key = f'{etl_prefix}/{dataset}/config.json'
-dataset_config = json.loads(
-    s3_client.get_object(Bucket=bucket_name, Key=dataset_config_key)['Body'].read()
-)
-date_format = dataset_config['date_format']
-bronze_database = warehouse_config['bronze_database']
-
-# Build paths from config patterns
-raw_pattern = warehouse_config['path_patterns']['raw']
-bronze_pattern = warehouse_config['path_patterns']['bronze']
-
-raw_path = f"s3://{bucket_name}/{raw_pattern.replace('{dataset}', dataset).replace('{run_id}', run_id)}"
-bronze_path = f"s3://{bucket_name}/{bronze_pattern.replace('{dataset}', dataset)}partition_datetime={run_id}/"
+raw_path = f"{raw_base_path}run_id={run_id}/"
+bronze_path = f"{bronze_base_path}partition_datetime={run_id}/"
 
 print(f"Starting Bronze ETL for {dataset}")
 print(f"Raw path: {raw_path}")
@@ -115,7 +107,7 @@ try:
     
     df_bronze.write \
              .mode("append") \
-             .option("compression", "zstd") \
+             .option("compression", compression_codec) \
              .parquet(bronze_path)
     
     print(f"Successfully processed {row_count} records")
@@ -124,8 +116,7 @@ try:
     print("Registering partition with Glue catalog...")
     glue_client = boto3.client('glue')
     
-    # Robust partition value extraction
-    partition_key = 'partition_datetime'
+    # Robust partition value extraction using configured key
     path_parts = [part for part in bronze_path.split('/') if part]
     partition_value = None
     
@@ -154,7 +145,7 @@ try:
             print("Bronze table not found, triggering crawler to create it...")
             
             # Start the crawler to create the initial table
-            crawler_name = f"{warehouse_config['warehouse_prefix']}-bronze-{dataset}-crawler"
+            crawler_name = bronze_crawler_name
             
             try:
                 # Check if crawler is already running
@@ -168,8 +159,8 @@ try:
                 # Wait for crawler to complete
                 print("Waiting for crawler to complete table creation...")
                 import time
-                max_wait_time = 600  # 10 minutes max
-                wait_interval = 30   # Check every 30 seconds
+                max_wait_time = crawler_timeout_seconds
+                wait_interval = crawler_check_interval
                 total_waited = 0
                 
                 while total_waited < max_wait_time:

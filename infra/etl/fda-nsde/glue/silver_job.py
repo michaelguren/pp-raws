@@ -5,7 +5,6 @@ Reads bronze data and applies SCD Type 2 versioning for change tracking
 import sys
 import boto3  # type: ignore[import-not-found]
 import copy
-import json
 from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
@@ -19,7 +18,14 @@ from pyspark.sql.window import Window  # type: ignore[import-not-found]
 from datetime import datetime
 
 # Get job parameters - only runtime essentials
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'run_id', 'bucket_name'])
+args = getResolvedOptions(sys.argv, [
+    'JOB_NAME', 'run_id', 'bucket_name', 'dataset',
+    'bronze_database', 'silver_database', 'warehouse_prefix',
+    'bronze_base_path', 'silver_base_path', 'business_key',
+    'silver_crawler_name', 'partition_key', 'compression_codec',
+    'crawler_timeout_seconds', 'crawler_check_interval', 'scd_end_date',
+    'spark_adaptive_enabled', 'spark_adaptive_coalesce'
+])
 
 # Initialize Glue
 sc = SparkContext()
@@ -29,44 +35,33 @@ job = Job(glueContext)
 job.init(args['JOB_NAME'], args)
 
 # Configure Spark
-spark.conf.set("spark.sql.parquet.compression.codec", "zstd")
-spark.conf.set("spark.sql.adaptive.enabled", "true")
-spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+spark.conf.set("spark.sql.parquet.compression.codec", args['compression_codec'])
+spark.conf.set("spark.sql.adaptive.enabled", args['spark_adaptive_enabled'])
+spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", args['spark_adaptive_coalesce'])
 
-# Load configuration
-s3_client = boto3.client('s3')
+# Get configuration from job arguments (passed from CDK)
 bucket_name = args['bucket_name']
 run_id = args['run_id']
-
-# Load warehouse config from fixed location
-warehouse_config_key = 'etl/config.json'
-warehouse_config = json.loads(
-    s3_client.get_object(Bucket=bucket_name, Key=warehouse_config_key)['Body'].read()
-)
-
-# Now use the prefix from config for other paths
-etl_prefix = warehouse_config.get('etl_assets_prefix', 'etl')
-
-# Extract dataset name from job name (pp-dw-silver-{dataset})
-job_name = args['JOB_NAME']
-dataset = job_name.split('-')[-1] if job_name.startswith('pp-dw-silver-') else 'fda-nsde'
-
-# Load dataset config using the prefix
-dataset_config_key = f'{etl_prefix}/{dataset}/config.json'
-dataset_config = json.loads(
-    s3_client.get_object(Bucket=bucket_name, Key=dataset_config_key)['Body'].read()
-)
-bronze_database = warehouse_config['bronze_database']
-silver_database = warehouse_config['silver_database']
+dataset = args['dataset']
+bronze_database = args['bronze_database']
+silver_database = args['silver_database']
+warehouse_prefix = args['warehouse_prefix']
+business_key = args['business_key']
+silver_crawler_name = args['silver_crawler_name']
+partition_key = args['partition_key']
+compression_codec = args['compression_codec']
+crawler_timeout_seconds = int(args['crawler_timeout_seconds'])
+crawler_check_interval = int(args['crawler_check_interval'])
+scd_end_date = args['scd_end_date']
 process_date = datetime.now().strftime('%Y-%m-%d')
 
-# Build paths from config patterns
-bronze_pattern = warehouse_config['path_patterns']['bronze']
-silver_pattern = warehouse_config['path_patterns']['silver']
+# Build paths from pre-computed base paths
+bronze_base_path = args['bronze_base_path']
+silver_base_path = args['silver_base_path']
 
 # Read from latest bronze partition
-bronze_path = f"s3://{bucket_name}/{bronze_pattern.replace('{dataset}', dataset)}partition_datetime={run_id}/"
-silver_path = f"s3://{bucket_name}/{silver_pattern.replace('{dataset}', dataset)}"
+bronze_path = f"{bronze_base_path}partition_datetime={run_id}/"
+silver_path = silver_base_path
 
 print(f"Starting Silver ETL with SCD Type 2 for {dataset}")
 print(f"Bronze path: {bronze_path}")
@@ -93,8 +88,7 @@ try:
     print("Preparing business key for SCD Type 2...")
     df_bronze = df_bronze_raw
     
-    # Use business key from config
-    business_key = dataset_config['business_key']
+    # Use business key from arguments (already loaded above)
     if business_key not in df_bronze.columns:
         raise ValueError(f"Required business key column '{business_key}' not found in bronze data")
     
@@ -170,7 +164,7 @@ try:
         df_inserts = df_classified.filter(col("change_type") == "INSERT") \
                                   .select("new.*") \
                                   .withColumn("record_effective_date", lit(process_date).cast("date")) \
-                                  .withColumn("record_end_date", lit("9999-12-31").cast("date")) \
+                                  .withColumn("record_end_date", lit(scd_end_date).cast("date")) \
                                   .withColumn("is_current", lit(True)) \
                                   .withColumn("change_type", lit("INSERT"))
         
@@ -185,7 +179,7 @@ try:
         df_updates_new = df_classified.filter(col("change_type") == "UPDATE") \
                                       .select("new.*") \
                                       .withColumn("record_effective_date", lit(process_date).cast("date")) \
-                                      .withColumn("record_end_date", lit("9999-12-31").cast("date")) \
+                                      .withColumn("record_end_date", lit(scd_end_date).cast("date")) \
                                       .withColumn("is_current", lit(True)) \
                                       .withColumn("change_type", lit("UPDATE"))
         
@@ -212,7 +206,7 @@ try:
         
         # First load - all records are inserts
         df_silver_final = df_bronze_with_hash.withColumn("record_effective_date", lit(process_date).cast("date")) \
-                                             .withColumn("record_end_date", lit("9999-12-31").cast("date")) \
+                                             .withColumn("record_end_date", lit(scd_end_date).cast("date")) \
                                              .withColumn("is_current", lit(True)) \
                                              .withColumn("change_type", lit("INSERT"))
     
@@ -235,7 +229,7 @@ try:
     
     df_silver_final.write \
                    .mode("overwrite") \
-                   .option("compression", "zstd") \
+                   .option("compression", compression_codec) \
                    .partitionBy("effective_year_month") \
                    .parquet(silver_path)
     
@@ -271,7 +265,7 @@ try:
         print("Silver table not found, triggering crawler to create it...")
         
         # Start the crawler to create the initial table
-        crawler_name = f"{warehouse_config['warehouse_prefix']}-silver-{dataset}-crawler"
+        crawler_name = silver_crawler_name
         
         try:
             # Check if crawler is already running
@@ -285,8 +279,8 @@ try:
             # Wait for crawler to complete
             print("Waiting for silver crawler to complete table creation...")
             import time
-            max_wait_time = 600  # 10 minutes max
-            wait_interval = 30   # Check every 30 seconds
+            max_wait_time = crawler_timeout_seconds
+            wait_interval = crawler_check_interval
             total_waited = 0
             
             while total_waited < max_wait_time:
@@ -309,7 +303,7 @@ try:
                     raise ValueError(f"Silver crawler failed with state: {state}")
             
             if total_waited >= max_wait_time:
-                raise ValueError("Silver crawler timed out after 10 minutes")
+                raise ValueError(f"Silver crawler timed out after {max_wait_time//60} minutes")
             
             # Now get the newly created table
             table = glue_client.get_table(

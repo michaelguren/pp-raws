@@ -68,28 +68,38 @@ s3://pp-dw-{account}/
 ├── raw/{dataset}/run_id={run_id}/                     # Original source files
 ├── bronze/bronze_{dataset}/partition_datetime={ts}/   # Cleaned parquet, datetime partitioned
 ├── silver/silver_{dataset}/                           # Business logic applied
-├── gold/{dataset}/                                    # (Future) Analytics marts
-└── etl/                                                # ETL assets (configs, scripts)
-    ├── config.json                                    # Warehouse-level configuration
-    ├── {dataset}/config.json                          # Dataset-specific configuration
-    └── {dataset}/                                     # Glue job scripts
+└── gold/{dataset}/                                    # (Future) Analytics marts
 ```
 
+**Note**: ETL configuration is now handled entirely at deployment time via CDK arguments - no config files are deployed to S3.
+
 ### Configuration Architecture
-**ETL-level config** (`./config.json`):
+**Deployment-Time Configuration** - All configuration is now handled via CDK and passed as Glue job arguments:
+
+**ETL-level config** (`./config.json`) - Read at CDK deployment time:
 - Warehouse naming conventions and prefixes
 - Shared database names (`pp_dw_bronze`, `pp_dw_silver`, `pp_dw_gold`)
-- S3 path patterns for each layer (configurable, not hardcoded)
+- S3 path patterns for each layer
 - Worker configurations by data size (small, medium, large, xlarge)
 - Default Glue settings (version, python, timeouts)
 
-**Dataset-specific config** (`./fda/{dataset}/config/dataset.json`):
+**Dataset-specific config** (`./fda-{dataset}/config.json`) - Read at CDK deployment time:
 - Dataset name, source URL, description
-- `data_size_category`: Determines Glue worker allocation (small/medium/large/xlarge)
+- `data_size_category`: Determines Glue worker allocation
 - Business key for SCD Type 2 tracking
 - Dataset-specific settings (schedules, data quality rules)
 
-Resource names are **dynamically constructed** from warehouse conventions + dataset name, ensuring DRY principles.
+**Glue Job Arguments** - All configuration passed via `defaultArguments`:
+- Pre-computed S3 paths (no runtime string manipulation)
+- Database names, crawler names, timeouts
+- Spark settings, compression codecs, SCD constants
+- Business keys and validation rules
+
+**Benefits**:
+- ✅ **Faster startup**: No S3 config reads during job execution
+- ✅ **More reliable**: Eliminates NoSuchKey configuration errors
+- ✅ **Explicit dependencies**: All configuration visible in CDK
+- ✅ **Deployment-time validation**: Config errors caught at deploy time
 
 ### Adding New Datasets
 To add a new dataset (e.g., `fda-rxnorm`):
@@ -98,9 +108,14 @@ To add a new dataset (e.g., `fda-rxnorm`):
    - Set appropriate `data_size_category` based on expected data volume
 2. **Add Lambda function**: `./fda-rxnorm/lambdas/fetch/app.py`
 3. **Create Glue jobs**: `./fda-rxnorm/glue/{bronze,silver}_job.py`
-4. **Create dataset stack**: `./fda-rxnorm/FdaRxnormStack.js` (copy from FdaNsdeStack pattern)
+   - Copy from existing jobs - they're now pure data processing (no config loading)
+4. **Create dataset stack**: `./fda-rxnorm/FdaRxnormStack.js`
+   - Copy from FdaNsdeStack pattern
+   - All configuration automatically passed as Glue job arguments
 5. **Update index.js**: Add new stack instantiation with dependency on EtlCoreStack
 6. **Deploy**: `cdk deploy --all` creates all resources with consistent naming
+
+**Note**: Glue jobs are now standardized and require minimal customization - configuration is handled entirely by CDK.
 
 ### Key Decisions & Rationale
 
