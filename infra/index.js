@@ -3,6 +3,7 @@
 const cdk = require('aws-cdk-lib');
 const { EtlCoreStack } = require('./etl/EtlCoreStack');
 const { FdaNsdeStack } = require('./etl/fda-nsde/FdaNsdeStack');
+const { FdaCderStack } = require('./etl/fda-cder/FdaCderStack');
 
 const app = new cdk.App();
 
@@ -26,8 +27,19 @@ const fdaNsdeStack = new FdaNsdeStack(app, 'pp-dw-etl-fda-nsde', {
   }
 });
 
-// Ensure NSDE stack depends on core infrastructure
+// FDA CDER dataset ETL stack
+const fdaCderStack = new FdaCderStack(app, 'pp-dw-etl-fda-cder', {
+  description: 'FDA CDER NDC dataset ETL pipeline with dual tables',
+  etlCoreStack: etlCoreStack,
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION || 'us-east-1'
+  }
+});
+
+// Ensure dataset stacks depend on core infrastructure
 fdaNsdeStack.addDependency(etlCoreStack);
+fdaCderStack.addDependency(etlCoreStack);
 
 // ===== API Infrastructure =====
 // Future: API Gateway, Lambda functions, DynamoDB tables

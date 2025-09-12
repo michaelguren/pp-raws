@@ -11,13 +11,13 @@ from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
 from awsglue.job import Job  # type: ignore[import-not-found]
-from pyspark.sql.functions import lit, current_timestamp, col, when, to_date  # type: ignore[import-not-found]
+from pyspark.sql.functions import lit, col, when, to_date  # type: ignore[import-not-found]
 
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
-    'JOB_NAME', 'run_id', 'bucket_name', 'dataset',
+    'JOB_NAME', 'bucket_name', 'dataset',
     'source_url', 'bronze_database', 'raw_base_path', 'bronze_base_path', 
-    'date_format', 'bronze_crawler_name', 'compression_codec'
+    'date_format', 'compression_codec'
 ])
 
 # Initialize Glue
@@ -30,14 +30,16 @@ job.init(args['JOB_NAME'], args)
 # Configure Spark
 spark.conf.set("spark.sql.parquet.compression.codec", args['compression_codec'])
 
+# Generate human-readable runtime run_id
+from datetime import datetime
+run_id = datetime.now().strftime("%Y%m%d_%H%M%S")  # Format: 20240311_143022
+
 # Get configuration from job arguments
 bucket_name = args['bucket_name']
-run_id = args['run_id']
 dataset = args['dataset']
 source_url = args['source_url']
 bronze_database = args['bronze_database']
 date_format = args['date_format']
-bronze_crawler_name = args['bronze_crawler_name']
 
 # Build paths from pre-computed base paths
 raw_base_path = args['raw_base_path']
@@ -136,9 +138,8 @@ try:
     
     print(f"Fixed date columns: {date_columns}")
     
-    # Add basic metadata  
-    df_bronze = df.withColumn("meta_ingest_timestamp", current_timestamp()) \
-                  .withColumn("meta_run_id", lit(run_id))
+    # Add basic metadata (run_id serves as both identifier and timestamp)
+    df_bronze = df.withColumn("meta_run_id", lit(run_id))
     
     # Write to bronze layer (overwrite for kill-and-fill approach)
     print(f"Writing to: {bronze_path}")
@@ -149,21 +150,12 @@ try:
              .parquet(bronze_path)
     
     print(f"Successfully processed {row_count} records to bronze layer")
-
-    # Trigger crawler to update table schema (kill-and-fill approach)
-    print("Triggering crawler to update table...")
-    glue_client = boto3.client('glue')
     
-    try:
-        glue_client.start_crawler(Name=bronze_crawler_name)
-        print("Crawler started - table will be updated with latest schema")
-        print(f"Complete ETL finished successfully:")
-        print(f"  - Downloaded: {len(zip_data)} bytes")
-        print(f"  - Raw files: {csv_count} CSVs saved")
-        print(f"  - Bronze records: {row_count} processed")
-    except Exception as e:
-        print(f"Warning: Could not start crawler: {str(e)}")
-        print("Data pipeline completed - table schema may need manual update")
+    print(f"Complete ETL finished successfully:")
+    print(f"  - Downloaded: {len(zip_data)} bytes")
+    print(f"  - Raw files: {csv_count} CSVs saved")
+    print(f"  - Bronze records: {row_count} processed")
+    print("Note: Run crawler manually via console if schema changes are needed")
 
 except Exception as e:
     print(f"Bronze job error: {str(e)}")

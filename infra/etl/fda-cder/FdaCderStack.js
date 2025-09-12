@@ -3,7 +3,7 @@ const glue = require("aws-cdk-lib/aws-glue");
 const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
 const path = require("path");
 
-class FdaNsdeStack extends cdk.Stack {
+class FdaCderStack extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
@@ -19,9 +19,9 @@ class FdaNsdeStack extends cdk.Stack {
     // Construct resource names from warehouse conventions
     const resourceNames = {
       bronzeJob: `${etlConfig.warehouse_prefix}-bronze-${dataset}`,
-      bronzeCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-crawler`
+      bronzeProductsCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-products-crawler`,
+      bronzePackagesCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-packages-crawler`
     };
-
 
     // Get worker config based on dataset size category
     const sizeCategory = datasetConfig.data_size_category || 'medium';
@@ -31,12 +31,13 @@ class FdaNsdeStack extends cdk.Stack {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
 
-    // Build S3 paths from warehouse config patterns
-    const bronzePath = etlConfig.path_patterns.bronze.replace('{dataset}', dataset);
+    // Build S3 paths from warehouse config patterns  
+    const bronzeProductsPath = etlConfig.path_patterns.bronze.replace('{dataset}', `${dataset}_products`);
+    const bronzePackagesPath = etlConfig.path_patterns.bronze.replace('{dataset}', `${dataset}_packages`);
     
     // Pre-compute simple S3 base paths for Glue jobs  
     const rawBasePath = `s3://${bucketName}/raw/${dataset}/`;
-    const bronzeBasePath = `s3://${bucketName}/bronze/bronze_${dataset}/`;
+    const bronzeBasePath = `s3://${bucketName}/bronze/bronze_${dataset}`;
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
@@ -45,7 +46,7 @@ class FdaNsdeStack extends cdk.Stack {
       destinationKeyPrefix: `etl/${dataset}/glue/`,
     });
 
-    // Bronze Glue job
+    // Bronze Glue job for dual-table processing
     new glue.CfnJob(this, "BronzeJob", {
       name: resourceNames.bronzeJob,
       role: glueRole.roleArn,
@@ -71,16 +72,15 @@ class FdaNsdeStack extends cdk.Stack {
       },
     });
 
-
-    // Bronze crawler (auto-discovers schema from parquet files)
-    new glue.CfnCrawler(this, "BronzeCrawler", {
-      name: resourceNames.bronzeCrawler,
+    // Bronze Products crawler (auto-discovers schema from parquet files)
+    new glue.CfnCrawler(this, "BronzeProductsCrawler", {
+      name: resourceNames.bronzeProductsCrawler,
       role: glueRole.roleArn,
       databaseName: etlConfig.bronze_database,
       targets: {
         s3Targets: [
           {
-            path: `s3://${bucketName}/${bronzePath}`
+            path: `s3://${bucketName}/${bronzeProductsPath}`
           }
         ]
       },
@@ -93,21 +93,44 @@ class FdaNsdeStack extends cdk.Stack {
       })
     });
 
-
-
+    // Bronze Packages crawler (auto-discovers schema from parquet files)
+    new glue.CfnCrawler(this, "BronzePackagesCrawler", {
+      name: resourceNames.bronzePackagesCrawler,
+      role: glueRole.roleArn,
+      databaseName: etlConfig.bronze_database,
+      targets: {
+        s3Targets: [
+          {
+            path: `s3://${bucketName}/${bronzePackagesPath}`
+          }
+        ]
+      },
+      configuration: JSON.stringify({
+        Version: 1.0,
+        CrawlerOutput: {
+          Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
+          Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
+        }
+      })
+    });
 
     // Outputs
     new cdk.CfnOutput(this, "BronzeJobName", {
       value: resourceNames.bronzeJob,
-      description: "Complete ETL Glue Job Name (download + transform)",
+      description: "Complete CDER ETL Glue Job Name (download + transform dual tables)",
     });
 
-    new cdk.CfnOutput(this, "BronzeCrawlerName", {
-      value: resourceNames.bronzeCrawler,
-      description: "Bronze Crawler Name",
+    new cdk.CfnOutput(this, "BronzeProductsCrawlerName", {
+      value: resourceNames.bronzeProductsCrawler,
+      description: "Bronze Products Crawler Name",
+    });
+
+    new cdk.CfnOutput(this, "BronzePackagesCrawlerName", {
+      value: resourceNames.bronzePackagesCrawler,
+      description: "Bronze Packages Crawler Name",
     });
 
   }
 }
 
-module.exports = { FdaNsdeStack };
+module.exports = { FdaCderStack };
