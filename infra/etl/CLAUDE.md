@@ -31,9 +31,9 @@ All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
 
 ### Data Quality & Lineage
 **Bronze Layer Standards:**
-- Clean column names (lowercase, underscores, no spaces)
+- Explicit column mappings from source to target names (no auto-cleaning)
 - Proper data types (dates as DATE, not strings)
-- Metadata columns: `meta_ingest_timestamp`, `meta_run_id`
+- Metadata columns: `meta_run_id` (human-readable timestamp format)
 - Compression: ZSTD for optimal storage/performance balance
 - Kill-and-fill approach: complete overwrite each run for maximum simplicity
 
@@ -75,7 +75,7 @@ s3://pp-dw-{account}/
 - Pre-computed S3 paths (no runtime string manipulation)
 - Database names, crawler names, timeouts
 - Spark settings, compression codecs
-- Data transformation rules (date formatting, column cleaning)
+- Data transformation rules (date formatting, explicit column mappings)
 
 **Benefits**:
 - ✅ **Faster startup**: No S3 config reads during job execution
@@ -134,7 +134,7 @@ Crawler → Athena Tables → Analytics
 The single Glue job handles:
 1. **Download**: Fetch source data from URL with timeout handling
 2. **Raw Storage**: Save original files to S3 for lineage and debugging  
-3. **Transform**: Clean columns, format dates, add metadata
+3. **Transform**: Map columns explicitly, format dates, add metadata
 4. **Bronze Storage**: Write parquet files (kill-and-fill approach)
 5. **Schema Update**: Trigger crawler for Athena table updates
 

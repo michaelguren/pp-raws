@@ -59,11 +59,6 @@ print(f"Date format: {date_format}")
 print(f"Bronze database: {bronze_database}")
 print(f"Mode: overwrite (kill-and-fill)")
 
-def clean_column_name(name):
-    """Clean column names: lowercase, replace spaces/special chars with underscores"""
-    import re
-    return re.sub(r'[^a-z0-9]+', '_', name.lower().strip()).strip('_')
-
 def apply_column_mapping(df, column_mapping):
     """Apply column name mapping to DataFrame"""
     for old_col, new_col in column_mapping.items():

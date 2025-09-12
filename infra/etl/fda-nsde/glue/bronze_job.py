@@ -57,6 +57,29 @@ print(f"Date format: {date_format}")
 print(f"Bronze database: {bronze_database}")
 print(f"Mode: overwrite (kill-and-fill)")
 
+def apply_column_mapping(df, column_mapping):
+    """Apply column name mapping to DataFrame"""
+    for old_col, new_col in column_mapping.items():
+        if old_col in df.columns:
+            df = df.withColumnRenamed(old_col, new_col)
+    return df
+
+# Column mappings from Ruby code
+NSDE_COLUMN_MAPPING = {
+    "Item Code": "item_code",
+    "NDC11": "ndc_11",
+    "Proprietary Name": "proprietary_name",
+    "Dosage Form": "dosage_form",
+    "Marketing Category": "marketing_category",
+    "Application Number or Citation": "application_number_or_citation",
+    "Product Type": "product_type",
+    "Marketing Start Date": "marketing_start_date",
+    "Marketing End Date": "marketing_end_date",
+    "Billing Unit": "billing_unit",
+    "Inactivation Date": "inactivation_date",
+    "Reactivation Date": "reactivation_date"
+}
+
 try:
     # Step 1: Download and save raw data
     print(f"Downloading from: {source_url}")
@@ -111,20 +134,10 @@ try:
     if row_count == 0:
         raise ValueError("No data found in CSV files")
     
-    print("Cleaning column names and data types...")
+    # Apply column mapping and transformations
+    df = apply_column_mapping(df, NSDE_COLUMN_MAPPING)
     
-    # Clean column names: lowercase, replace spaces/special chars with underscores
-    def clean_column_name(name):
-        import re
-        return re.sub(r'[^a-z0-9]+', '_', name.lower().strip()).strip('_')
-    
-    # Rename columns
-    for old_col in df.columns:
-        clean_name = clean_column_name(old_col)
-        if old_col != clean_name:
-            df = df.withColumnRenamed(old_col, clean_name)
-    
-    print(f"Cleaned columns: {df.columns}")
+    print(f"Mapped columns: {df.columns}")
     
     # Fix date columns - convert date strings to proper dates using configurable format
     date_columns = [col for col in df.columns if 'date' in col]
