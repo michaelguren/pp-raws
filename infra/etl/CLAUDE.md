@@ -2,40 +2,32 @@
 
 ## Strategic Paradigms & Decisions
 
-### Medallion Architecture
-We implement a **Bronze → Silver → Gold** medallion architecture for all datasets:
+### Simplified Data Architecture
+We implement a **Raw → Bronze** approach for initial datasets:
 
 - **Raw Layer**: S3 prefix `raw/{dataset}/run_id={run_id}/` - Original source data (zip, csv) with run-based organization
-- **Bronze Layer**: S3 prefix `bronze/bronze_{dataset}/partition_datetime={timestamp}/` - Cleaned, typed parquet with metadata
-- **Silver Layer**: S3 prefix `silver/silver_{dataset}/` - Business logic, SCD Type 2, deduplication  
-- **Gold Layer**: (Future) Analytics-ready aggregations and marts
+- **Bronze Layer**: S3 prefix `bronze/bronze_{dataset}/` - Cleaned, typed parquet with basic transformations (date formatting, column naming)
+- **Silver/Gold Layers**: (Future) Advanced transformations and analytics marts as needed
 
 ### Resource Naming Conventions
 All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
 
 **Glue Jobs:**
 - `pp-dw-bronze-{dataset}`
-- `pp-dw-silver-{dataset}`
 
 **Crawlers:**
 - `pp-dw-bronze-{dataset}-crawler`
-- `pp-dw-silver-{dataset}-crawler`
 
-**Lambda Functions:**
-- `pp-dw-raw-fetch-{dataset}`
 
 **Databases:**
 - `pp_dw_bronze` (shared across all datasets)
-- `pp_dw_silver` (shared across all datasets)
-- `pp_dw_gold` (future)
 
 **Tables:**
-- `{dataset}` (same name in both bronze and silver databases)
+- `{dataset}` in bronze database
 
-### Partitioning Strategy
+### Data Storage Strategy
 - **Raw data**: Partitioned by `run_id` for lineage tracking
-- **Bronze data**: Partitioned by `partition_datetime=YYYY-MM-DD-HHMMSS` for query performance
-- **Silver data**: Partitioned by business-relevant dimensions (dates, categories, etc.)
+- **Bronze data**: Simple kill-and-fill approach - full overwrite each run for simplicity
 
 ### Data Quality & Lineage
 **Bronze Layer Standards:**
@@ -43,57 +35,47 @@ All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
 - Proper data types (dates as DATE, not strings)
 - Metadata columns: `meta_ingest_timestamp`, `meta_run_id`
 - Compression: ZSTD for optimal storage/performance balance
-
-**Silver Layer Standards:**
-- **SCD Type 2 Implementation**: Full historical change tracking with:
-  - `record_effective_date` / `record_end_date` for versioning
-  - `is_current` boolean flag for active records  
-  - `change_type` (INSERT/UPDATE/DELETE) for audit trails
-  - `record_hash` MD5 fingerprint for change detection
-  - Business key normalization and validation as needed
-- Smart merge logic handles new, changed, and deleted records
-- Partitioned by `effective_year_month` for query performance
-- Complete audit trail for regulatory compliance
+- Kill-and-fill approach: complete overwrite each run for maximum simplicity
 
 ### Infrastructure Pattern
 **Core + Dataset Stack Separation:**
-- **EtlCoreStack**: Shared S3 bucket, Glue databases, IAM roles
-- **Dataset Stacks**: Dataset-specific Lambda, Glue jobs, crawlers, Step Functions
-- Clean separation of concerns with CloudFormation cross-stack references
+- **EtlCoreStack**: Shared S3 bucket, Glue database, IAM roles
+- **Dataset Stacks**: Dataset-specific Glue job, crawler, script deployment
+- Clean separation of concerns with direct stack references (not CloudFormation exports)
 - Core infrastructure deployed once, dataset stacks can deploy independently
+- **Glue Script Deployment**: Scripts automatically uploaded to S3 via CDK BucketDeployment during stack deployment
 
 ### S3 Organization
 ```
 s3://pp-dw-{account}/
+├── etl/{dataset}/glue/                                # Deployed Glue job scripts
 ├── raw/{dataset}/run_id={run_id}/                     # Original source files
-├── bronze/bronze_{dataset}/partition_datetime={ts}/   # Cleaned parquet, datetime partitioned
-├── silver/silver_{dataset}/                           # Business logic applied
-└── gold/{dataset}/                                    # (Future) Analytics marts
+├── bronze/bronze_{dataset}/                           # Cleaned parquet, kill-and-fill
+└── silver/{dataset}/                                  # (Future) Business logic and analytics
 ```
 
-**Note**: ETL configuration is now handled entirely at deployment time via CDK arguments - no config files are deployed to S3.
+**Note**: ETL configuration is now handled entirely at deployment time via CDK arguments - no config files are deployed to S3. Glue job scripts are automatically deployed to `etl/{dataset}/glue/` during CDK deployment.
 
 ### Configuration Architecture
 **Deployment-Time Configuration** - All configuration is now handled via CDK and passed as Glue job arguments:
 
 **ETL-level config** (`./config.json`) - Read at CDK deployment time:
 - Warehouse naming conventions and prefixes
-- Shared database names (`pp_dw_bronze`, `pp_dw_silver`, `pp_dw_gold`)
-- S3 path patterns for each layer
+- Shared database name (`pp_dw_bronze`)
+- S3 path patterns for raw and bronze layers
 - Worker configurations by data size (small, medium, large, xlarge)
 - Default Glue settings (version, python, timeouts)
 
 **Dataset-specific config** (`./fda-{dataset}/config.json`) - Read at CDK deployment time:
 - Dataset name, source URL, description
 - `data_size_category`: Determines Glue worker allocation
-- Business key for SCD Type 2 tracking
 - Dataset-specific settings (schedules, data quality rules)
 
 **Glue Job Arguments** - All configuration passed via `defaultArguments`:
 - Pre-computed S3 paths (no runtime string manipulation)
 - Database names, crawler names, timeouts
-- Spark settings, compression codecs, SCD constants
-- Business keys and validation rules
+- Spark settings, compression codecs
+- Data transformation rules (date formatting, column cleaning)
 
 **Benefits**:
 - ✅ **Faster startup**: No S3 config reads during job execution
@@ -106,16 +88,17 @@ To add a new dataset (e.g., `fda-rxnorm`):
 
 1. **Create dataset config**: `./fda-rxnorm/config.json`
    - Set appropriate `data_size_category` based on expected data volume
-2. **Add Lambda function**: `./fda-rxnorm/lambdas/fetch/app.py`
-3. **Create Glue jobs**: `./fda-rxnorm/glue/{bronze,silver}_job.py`
-   - Copy from existing jobs - they're now pure data processing (no config loading)
-4. **Create dataset stack**: `./fda-rxnorm/FdaRxnormStack.js`
-   - Copy from FdaNsdeStack pattern
+   - Include `source_url` for data download
+2. **Create complete Glue job**: `./fda-rxnorm/glue/bronze_job.py`
+   - Copy from existing jobs - handles download + transform in single job
    - All configuration automatically passed as Glue job arguments
-5. **Update index.js**: Add new stack instantiation with dependency on EtlCoreStack
-6. **Deploy**: `cdk deploy --all` creates all resources with consistent naming
+3. **Create dataset stack**: `./fda-rxnorm/FdaRxnormStack.js`
+   - Copy from FdaNsdeStack pattern (no Lambda needed)
+   - Include BucketDeployment for automatic Glue script upload to S3
+4. **Update index.js**: Add new stack instantiation with `etlCoreStack` reference and dependency
+5. **Deploy**: `cdk deploy --all` creates all resources with consistent naming
 
-**Note**: Glue jobs are now standardized and require minimal customization - configuration is handled entirely by CDK.
+**Note**: Single Glue jobs handle the complete ETL pipeline - no separate download/transform steps needed.
 
 ### Key Decisions & Rationale
 
@@ -130,11 +113,11 @@ To add a new dataset (e.g., `fda-rxnorm`):
 - Clear separation of shared vs dataset-specific concerns
 - Scales cleanly as new datasets are added
 
-**Why Bronze-First Approach?**
+**Why Raw-to-Bronze Approach?**
 - Raw data preserved immutably for reprocessability
-- Bronze handles technical transformations (typing, cleaning)
-- Silver handles business transformations (SCD, validation)
-- Clear separation of concerns
+- Bronze handles essential transformations (typing, cleaning, date formatting)
+- Additional layers added as business needs evolve
+- Simple starting point that can be enhanced
 
 **Why Prefix-Based Organization?**
 - Single bucket simplifies permissions
@@ -144,37 +127,41 @@ To add a new dataset (e.g., `fda-rxnorm`):
 
 ### Data Processing Flow
 ```
-Step Function (auto-generates run_id) → Fetch Lambda → S3 Raw → Bronze Job → S3 Bronze → 
-Silver Job → S3 Silver → Athena Tables → Analytics
+EventBridge → Glue Job (download + transform) → S3 Raw + Bronze → 
+Crawler → Athena Tables → Analytics
 ```
 
-- **No manual input required**: Step Function auto-generates `run_id` timestamp
-- **Each step maintains lineage** through `meta_run_id` for full traceability
+The single Glue job handles:
+1. **Download**: Fetch source data from URL with timeout handling
+2. **Raw Storage**: Save original files to S3 for lineage and debugging  
+3. **Transform**: Clean columns, format dates, add metadata
+4. **Bronze Storage**: Write parquet files (kill-and-fill approach)
+5. **Schema Update**: Trigger crawler for Athena table updates
+
+- **Complete autonomy**: One job does everything from download to Athena-ready data
+- **Clear lineage**: Raw files preserved with run_id for full traceability  
 - **Worker sizing is automatic** based on dataset's `data_size_category`
 
-### Autonomous Table Creation & Partition Management
+### Autonomous Table Management
 
-**Smart Crawler Integration**: Both Bronze and Silver jobs implement intelligent table management:
+**Kill-and-Fill Approach**: Bronze jobs implement simple table management:
 
-1. **Table Existence Check**: Jobs first attempt to get table metadata from Glue catalog
-2. **Automatic Crawler Trigger**: If table doesn't exist (first run), job automatically:
-   - Starts the appropriate crawler (`pp-dw-bronze-{dataset}-crawler` or `pp-dw-silver-{dataset}-crawler`)
-   - Waits for crawler completion (max 10 minutes)
-   - Retrieves newly created table metadata
-3. **Direct Partition Registration**: Once table exists, jobs register new partitions directly via API
+1. **Data Overwrite**: Each run completely overwrites the bronze table data
+2. **Schema Updates**: Crawler runs after each job to update table schema automatically
+3. **No Partition Management**: Simple single-table structure without partitions
 
 **Benefits:**
-- ✅ **Fully Autonomous**: No manual intervention required on first run
-- ✅ **Self-Healing**: Handles table creation automatically
-- ✅ **Efficient**: Crawlers only run when needed (once per dataset)
-- ✅ **Immediate Availability**: Athena can query new data immediately after job completion
-- ✅ **Robust Error Handling**: Graceful fallbacks if crawler fails
+- ✅ **Maximum Simplicity**: No complex partition or merge logic
+- ✅ **Always Fresh**: Complete dataset refresh every run
+- ✅ **Schema Evolution**: Crawler automatically detects schema changes
+- ✅ **Easy Debugging**: Clear data lineage - one run = one complete dataset
+- ✅ **Fast Development**: Perfect for testing and iteration
 
 **Crawler Role**: 
-- Bronze/Silver crawlers exist for **initial table creation only**
-- Never triggered by Step Functions or schedules
-- Only invoked automatically by jobs when tables don't exist
-- After first run, all partition management is direct API calls
+- Bronze crawlers run after **every job execution**
+- Automatically update table schema based on latest parquet files
+- Handle column additions, type changes, and schema evolution
+- Ensure Athena queries work immediately after job completion
 
 ### Performance Optimization
 **Worker Configuration by Data Size (AWS Best Practices):**

@@ -1,23 +1,23 @@
 """
-Simple NSDE Bronze Job - minimal dependencies
-Reads raw CSV from S3 and converts to Parquet
+Complete NSDE ETL Job - Download, Transform, and Store
+Downloads FDA data, saves raw files for lineage, transforms to Bronze layer
 """
 import sys
 import boto3  # type: ignore[import-not-found]
-import copy
+import urllib.request
+import zipfile
+from io import BytesIO
 from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
 from awsglue.job import Job  # type: ignore[import-not-found]
 from pyspark.sql.functions import lit, current_timestamp, col, when, to_date  # type: ignore[import-not-found]
 
-# Get job parameters - only runtime essentials
+# Get job parameters
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'run_id', 'bucket_name', 'dataset',
-    'bronze_database', 'warehouse_prefix', 'raw_base_path', 
-    'bronze_base_path', 'date_format', 'bronze_crawler_name',
-    'partition_key', 'compression_codec', 'crawler_timeout_seconds', 
-    'crawler_check_interval'
+    'source_url', 'bronze_database', 'raw_base_path', 'bronze_base_path', 
+    'date_format', 'bronze_crawler_name', 'compression_codec'
 ])
 
 # Initialize Glue
@@ -30,35 +30,73 @@ job.init(args['JOB_NAME'], args)
 # Configure Spark
 spark.conf.set("spark.sql.parquet.compression.codec", args['compression_codec'])
 
-# Get configuration from job arguments (passed from CDK)
+# Get configuration from job arguments
 bucket_name = args['bucket_name']
 run_id = args['run_id']
 dataset = args['dataset']
+source_url = args['source_url']
 bronze_database = args['bronze_database']
-warehouse_prefix = args['warehouse_prefix']
 date_format = args['date_format']
 bronze_crawler_name = args['bronze_crawler_name']
-partition_key = args['partition_key']
-compression_codec = args['compression_codec']
-crawler_timeout_seconds = int(args['crawler_timeout_seconds'])
-crawler_check_interval = int(args['crawler_check_interval'])
 
 # Build paths from pre-computed base paths
 raw_base_path = args['raw_base_path']
 bronze_base_path = args['bronze_base_path']
 
 raw_path = f"{raw_base_path}run_id={run_id}/"
-bronze_path = f"{bronze_base_path}partition_datetime={run_id}/"
+bronze_path = bronze_base_path.rstrip('/')
 
-print(f"Starting Bronze ETL for {dataset}")
+print(f"Starting Complete ETL for {dataset} (download + transform)")
+print(f"Source URL: {source_url}")
 print(f"Raw path: {raw_path}")
 print(f"Bronze path: {bronze_path}")
 print(f"Run ID: {run_id}")
 print(f"Date format: {date_format}")
 print(f"Bronze database: {bronze_database}")
+print(f"Mode: overwrite (kill-and-fill)")
 
 try:
-    # Read CSV files from raw path
+    # Step 1: Download and save raw data
+    print(f"Downloading from: {source_url}")
+    
+    # Download with timeout
+    with urllib.request.urlopen(source_url, timeout=300) as response:
+        zip_data = response.read()
+    
+    print(f"Downloaded {len(zip_data)} bytes")
+    
+    # Save original zip file to raw layer for lineage
+    s3_client = boto3.client('s3')
+    zip_key = f"raw/{dataset}/run_id={run_id}/source.zip"
+    
+    s3_client.put_object(
+        Bucket=bucket_name,
+        Key=zip_key,
+        Body=zip_data,
+        ContentType='application/zip'
+    )
+    print(f"Saved original zip to: s3://{bucket_name}/{zip_key}")
+    
+    # Extract and save CSV files to raw layer
+    csv_count = 0
+    with zipfile.ZipFile(BytesIO(zip_data)) as z:
+        for file_name in z.namelist():
+            if file_name.lower().endswith('.csv'):
+                with z.open(file_name) as csv_file:
+                    csv_data = csv_file.read()
+                    csv_key = f"raw/{dataset}/run_id={run_id}/{file_name}"
+                    
+                    s3_client.put_object(
+                        Bucket=bucket_name,
+                        Key=csv_key,
+                        Body=csv_data,
+                        ContentType='text/csv'
+                    )
+                    csv_count += 1
+    
+    print(f"Extracted and saved {csv_count} CSV files to raw layer")
+    
+    # Step 2: Read CSV files from raw path for transformation
     print(f"Reading CSV from: {raw_path}*.csv")
     
     df = spark.read.option("header", "true") \
@@ -102,137 +140,30 @@ try:
     df_bronze = df.withColumn("meta_ingest_timestamp", current_timestamp()) \
                   .withColumn("meta_run_id", lit(run_id))
     
-    # Write to bronze layer
+    # Write to bronze layer (overwrite for kill-and-fill approach)
     print(f"Writing to: {bronze_path}")
     
     df_bronze.write \
-             .mode("append") \
-             .option("compression", compression_codec) \
+             .mode("overwrite") \
+             .option("compression", args['compression_codec']) \
              .parquet(bronze_path)
     
-    print(f"Successfully processed {row_count} records")
+    print(f"Successfully processed {row_count} records to bronze layer")
 
-    # Register partition with Glue catalog
-    print("Registering partition with Glue catalog...")
+    # Trigger crawler to update table schema (kill-and-fill approach)
+    print("Triggering crawler to update table...")
     glue_client = boto3.client('glue')
     
-    # Robust partition value extraction using configured key
-    path_parts = [part for part in bronze_path.split('/') if part]
-    partition_value = None
-    
-    for part in path_parts:
-        if part.startswith(f"{partition_key}="):
-            partition_value = part.split('=', 1)[1]
-            break
-    
-    if not partition_value:
-        print(f"Warning: Partition key '{partition_key}' not found in bronze_path: {bronze_path}")
-        print("This could indicate a path format change or different dataset structure")
-        raise ValueError(f"Partition key '{partition_key}' not found in bronze_path: {bronze_path}")
-    
-    print(f"Extracted partition value: {partition_value}")
-    
     try:
-        # Try to get table metadata - if table doesn't exist, trigger crawler first
-        try:
-            table = glue_client.get_table(
-                DatabaseName=bronze_database,
-                Name=dataset
-            )['Table']
-            print("Bronze table found, proceeding with partition registration")
-            
-        except glue_client.exceptions.EntityNotFoundException:
-            print("Bronze table not found, triggering crawler to create it...")
-            
-            # Start the crawler to create the initial table
-            crawler_name = bronze_crawler_name
-            
-            try:
-                # Check if crawler is already running
-                crawler_response = glue_client.get_crawler(Name=crawler_name)
-                if crawler_response['Crawler']['State'] == 'RUNNING':
-                    print("Crawler already running, waiting for completion...")
-                else:
-                    print("Starting crawler...")
-                    glue_client.start_crawler(Name=crawler_name)
-                
-                # Wait for crawler to complete
-                print("Waiting for crawler to complete table creation...")
-                import time
-                max_wait_time = crawler_timeout_seconds
-                wait_interval = crawler_check_interval
-                total_waited = 0
-                
-                while total_waited < max_wait_time:
-                    time.sleep(wait_interval)
-                    total_waited += wait_interval
-                    
-                    crawler_status = glue_client.get_crawler(Name=crawler_name)
-                    state = crawler_status['Crawler']['State']
-                    print(f"Crawler state: {state} (waited {total_waited}s)")
-                    
-                    if state == 'READY':
-                        print("Crawler completed successfully")
-                        break
-                    elif state == 'STOPPING':
-                        print("Crawler is stopping...")
-                        continue
-                    elif state in ['RUNNING', 'STOPPING']:
-                        continue
-                    else:
-                        raise ValueError(f"Crawler failed with state: {state}")
-                
-                if total_waited >= max_wait_time:
-                    print(f"Error: Crawler timed out after {max_wait_time//60} minutes")
-                    print("Cannot proceed without confirmed table creation")
-                    raise ValueError(f"Crawler timed out after {max_wait_time//60} minutes - table creation uncertain")
-                
-                # Now get the newly created table
-                table = glue_client.get_table(
-                    DatabaseName=bronze_database,
-                    Name=dataset
-                )['Table']
-                print("Successfully retrieved table metadata after crawler completion")
-                
-            except Exception as crawler_error:
-                print(f"Error with crawler: {str(crawler_error)}")
-                # Try to continue anyway - maybe table was created by another process
-                try:
-                    table = glue_client.get_table(
-                        DatabaseName=bronze_database,
-                        Name=dataset
-                    )['Table']
-                    print("Table found despite crawler error, continuing...")
-                except:
-                    raise ValueError(f"Could not create or find bronze table: {str(crawler_error)}")
-        
-        # Deep copy storage descriptor to avoid modifying nested structures
-        storage_desc = copy.deepcopy(table['StorageDescriptor'])
-        storage_desc['Location'] = bronze_path
-        
-        # Check if partition exists
-        try:
-            glue_client.get_partition(
-                DatabaseName=bronze_database,
-                TableName=dataset,
-                PartitionValues=[partition_value]
-            )
-            print(f"Partition {partition_value} already exists, skipping creation")
-        except glue_client.exceptions.EntityNotFoundException:
-            # Create new partition
-            glue_client.create_partition(
-                DatabaseName=bronze_database,
-                TableName=dataset,
-                PartitionInput={
-                    'Values': [partition_value],
-                    'StorageDescriptor': storage_desc
-                }
-            )
-            print(f"Successfully registered partition: {partition_value}")
-            
+        glue_client.start_crawler(Name=bronze_crawler_name)
+        print("Crawler started - table will be updated with latest schema")
+        print(f"Complete ETL finished successfully:")
+        print(f"  - Downloaded: {len(zip_data)} bytes")
+        print(f"  - Raw files: {csv_count} CSVs saved")
+        print(f"  - Bronze records: {row_count} processed")
     except Exception as e:
-        print(f"Warning: Could not register partition: {str(e)}")
-        # Don't fail the job - partition registration is nice-to-have
+        print(f"Warning: Could not start crawler: {str(e)}")
+        print("Data pipeline completed - table schema may need manual update")
 
 except Exception as e:
     print(f"Bronze job error: {str(e)}")

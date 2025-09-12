@@ -38,19 +38,6 @@ class EtlCoreStack extends cdk.Stack {
     // Grant S3 access to Glue for data warehouse bucket
     dataWarehouseBucket.grantReadWrite(glueRole);
 
-    // Shared Lambda execution role for all fetch functions
-    const lambdaRole = new iam.Role(this, "LambdaRole", {
-      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName(
-          "service-role/AWSLambdaBasicExecutionRole"
-        ),
-      ],
-    });
-
-    // Grant S3 access to Lambda for data warehouse bucket
-    dataWarehouseBucket.grantReadWrite(lambdaRole);
-
     // Glue bronze database for Athena queries (shared across all datasets)
     const bronzeDatabase = new glue.CfnDatabase(this, "BronzeDatabase", {
       catalogId: this.account,
@@ -72,7 +59,6 @@ class EtlCoreStack extends cdk.Stack {
     // Store references for other stacks to import
     this.dataWarehouseBucket = dataWarehouseBucket;
     this.glueRole = glueRole;
-    this.lambdaRole = lambdaRole;
     this.bronzeDatabase = bronzeDatabase;
     this.silverDatabase = silverDatabase;
     this.warehouseConfig = warehouseConfig;
@@ -90,11 +76,6 @@ class EtlCoreStack extends cdk.Stack {
       exportName: "pp-dw-glue-role-arn"
     });
 
-    new cdk.CfnOutput(this, "LambdaRoleArn", {
-      value: lambdaRole.roleArn,
-      description: "Shared Lambda execution role ARN", 
-      exportName: "pp-dw-lambda-role-arn"
-    });
   }
 }
 

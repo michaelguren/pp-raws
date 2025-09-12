@@ -19,6 +19,7 @@ const etlCoreStack = new EtlCoreStack(app, 'pp-dw-etl-core', {
 // Dataset-specific ETL stacks
 const fdaNsdeStack = new FdaNsdeStack(app, 'pp-dw-etl-fda-nsde', {
   description: 'FDA NSDE dataset ETL pipeline',
+  etlCoreStack: etlCoreStack,
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION || 'us-east-1'
