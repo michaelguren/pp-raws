@@ -4,6 +4,7 @@ const cdk = require('aws-cdk-lib');
 const { EtlCoreStack } = require('./etl/EtlCoreStack');
 const { FdaNsdeStack } = require('./etl/fda-nsde/FdaNsdeStack');
 const { FdaCderStack } = require('./etl/fda-cder/FdaCderStack');
+const { FdaAllNdcStack } = require('./etl/fda-all-ndc/FdaAllNdcStack');
 
 const app = new cdk.App();
 
@@ -37,9 +38,24 @@ const fdaCderStack = new FdaCderStack(app, 'pp-dw-etl-fda-cder', {
   }
 });
 
+// FDA All NDC GOLD layer stack (combines NSDE + CDER)
+const fdaAllNdcStack = new FdaAllNdcStack(app, 'pp-dw-etl-fda-all-ndc', {
+  description: 'FDA All NDC GOLD layer - combines NSDE and CDER data',
+  etlCoreStack: etlCoreStack,
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION || 'us-east-1'
+  }
+});
+
 // Ensure dataset stacks depend on core infrastructure
 fdaNsdeStack.addDependency(etlCoreStack);
 fdaCderStack.addDependency(etlCoreStack);
+fdaAllNdcStack.addDependency(etlCoreStack);
+
+// GOLD layer depends on bronze layer data
+fdaAllNdcStack.addDependency(fdaNsdeStack);
+fdaAllNdcStack.addDependency(fdaCderStack);
 
 // ===== API Infrastructure =====
 // Future: API Gateway, Lambda functions, DynamoDB tables

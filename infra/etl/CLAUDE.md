@@ -23,7 +23,8 @@ All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
 - `pp_dw_bronze` (shared across all datasets)
 
 **Tables:**
-- `{dataset}` in bronze database
+- `bronze_{dataset}` for single-table datasets (e.g., `bronze_fda_nsde`)
+- `bronze_{dataset}_{table_type}` for multi-table datasets (e.g., `bronze_fda_cder_products`, `bronze_fda_cder_packages`)
 
 ### Data Storage Strategy
 - **Raw data**: Partitioned by `run_id` for lineage tracking
