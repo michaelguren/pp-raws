@@ -23,10 +23,6 @@ class FdaAllNdcStack extends cdk.Stack {
     const goldBasePath = `s3://${bucketName}/${etlConfig.path_patterns.gold.replace('{dataset}', datasetConfig.dataset)}`;
     const goldScriptPath = `s3://${bucketName}/${etlConfig.path_patterns.gold_script?.replace('{dataset}', datasetConfig.dataset) || `etl/${datasetConfig.dataset}/glue/gold_job.py`}`;
 
-    console.log(`Creating GOLD stack for ${datasetConfig.dataset}`);
-    console.log(`Worker config: ${JSON.stringify(workerConfig)}`);
-    console.log(`GOLD path: ${goldBasePath}`);
-    console.log(`Script path: ${goldScriptPath}`);
 
     // Deploy Glue script to S3
     new s3deploy.BucketDeployment(this, 'DeployGlueScript', {
@@ -112,7 +108,6 @@ class FdaAllNdcStack extends cdk.Stack {
 
     // Create EventBridge rule for scheduling if enabled
     if (datasetConfig.schedule?.enabled) {
-      console.log(`GOLD job scheduling not yet implemented - manual trigger required`);
       // TODO: Add EventBridge scheduling when needed
     }
 
@@ -120,11 +115,6 @@ class FdaAllNdcStack extends cdk.Stack {
     this.goldJob = goldJob;
     this.goldCrawler = goldCrawler;
     this.goldPath = goldBasePath;
-
-    console.log(`✅ GOLD stack created for ${datasetConfig.dataset}`);
-    console.log(`   Job: ${goldJob.name}`);
-    console.log(`   Crawler: ${goldCrawler.name}`);
-    console.log(`   Target table: gold_${datasetConfig.dataset.replace('-', '_')}`);
   }
 }
 

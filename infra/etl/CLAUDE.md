@@ -40,11 +40,39 @@ All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
 
 ### Infrastructure Pattern
 **Core + Dataset Stack Separation:**
-- **EtlCoreStack**: Shared S3 bucket, Glue database, IAM roles
+- **EtlCoreStack**: Shared S3 bucket, Glue database, shared IAM roles
 - **Dataset Stacks**: Dataset-specific Glue job, crawler, script deployment
 - Clean separation of concerns with direct stack references (not CloudFormation exports)
 - Core infrastructure deployed once, dataset stacks can deploy independently
 - **Glue Script Deployment**: Scripts automatically uploaded to S3 via CDK BucketDeployment during stack deployment
+
+### IAM Role Strategy (Least Privilege)
+**Shared Glue Role (Default):**
+- Created in EtlCoreStack for basic ETL operations
+- Permissions: S3 read/write, Glue catalog access, CloudWatch logs
+- Used by most datasets (FDA NSDE, CDER, etc.)
+- **No sensitive permissions** (no Secrets Manager, no external APIs)
+
+**Custom Glue Roles (When Needed):**
+- Created in individual dataset stacks for sensitive operations
+- **Required for**: Secrets Manager access, external API calls, special permissions
+- Example: RxNORM needs UMLS API key from Secrets Manager
+- Inherits basic Glue permissions + specific sensitive permissions
+
+**Implementation Pattern:**
+```javascript
+// ❌ BAD - Adding secrets access to shared role affects all datasets
+const sharedRole = props.etlCoreStack.glueRole;
+sharedRole.addToPolicy(secretsPolicy); // DON'T DO THIS
+
+// ✅ GOOD - Create dataset-specific role for sensitive operations
+const datasetGlueRole = new iam.Role(this, "DatasetGlueRole", {
+  assumedBy: new iam.ServicePrincipal("glue.amazonaws.com"),
+  managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSGlueServiceRole")],
+});
+dataWarehouseBucket.grantReadWrite(datasetGlueRole);
+datasetGlueRole.addToPolicy(secretsPolicy); // Only this dataset gets secrets access
+```
 
 ### S3 Organization
 ```
@@ -94,10 +122,15 @@ To add a new dataset (e.g., `fda-rxnorm`):
    - Copy from existing jobs - handles download + transform in single job
    - All configuration automatically passed as Glue job arguments
 3. **Create dataset stack**: `./fda-rxnorm/FdaRxnormStack.js`
-   - Copy from FdaNsdeStack pattern (no Lambda needed)
+   - **For basic datasets**: Use shared Glue role from `props.etlCoreStack.glueRole`
+   - **For sensitive datasets**: Create custom role with additional permissions
    - Include BucketDeployment for automatic Glue script upload to S3
 4. **Update index.js**: Add new stack instantiation with `etlCoreStack` reference and dependency
 5. **Deploy**: `cdk deploy --all` creates all resources with consistent naming
+
+**Role Decision Matrix:**
+- **Use Shared Role**: Public data sources, no authentication, standard S3/Glue operations
+- **Create Custom Role**: Secrets Manager access, external APIs, special permissions, authentication required
 
 **Note**: Single Glue jobs handle the complete ETL pipeline - no separate download/transform steps needed.
 
@@ -170,6 +203,27 @@ The single Glue job handles:
 - **Medium** (100MB-1GB): G.1X with 5 workers - Optimal for 5-10 DPU recommendation
 - **Large** (1GB-5GB): G.1X with 10 workers - Horizontal scaling for parallelism
 - **XLarge** (>5GB): G.2X with 10 workers - Vertical + horizontal scaling for memory-intensive workloads
+
+### CDK Development Guidelines
+
+**IMPORTANT: No Console Logging During CDK Build**
+- **NEVER** use `console.log()` statements in CDK stack constructors
+- Console output during `cdk deploy` creates noise and clutters deployment logs
+- Use CDK outputs (`CfnOutput`) for important information instead
+- Debug information should be in comments or removed before commit
+
+**Clean Deployment Output:**
+```javascript
+// ❌ BAD - Creates noise during deployment
+console.log(`Creating stack for ${dataset}`);
+console.log(`Worker config: ${JSON.stringify(config)}`);
+
+// ✅ GOOD - Use CfnOutput for important info
+new cdk.CfnOutput(this, "DatasetName", {
+  value: dataset,
+  description: "Dataset being processed"
+});
+```
 
 ### Future Considerations
 - **Cost optimization**: Lifecycle rules for old raw data

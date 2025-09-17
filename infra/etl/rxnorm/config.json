@@ -1,0 +1,33 @@
+{
+  "dataset": "rxnorm",
+  "source_url_pattern": "https://download.nlm.nih.gov/umls/kss/rxnorm/RxNorm_full_{date}.zip",
+  "description": "RxNORM normalized drug nomenclature with RRF tables",
+  "data_size_category": "xlarge",
+  "default_release_date": "09022025",
+  "schedule": {
+    "enabled": false,
+    "expression": "cron(0 2 5 * ? *)",
+    "description": "Monthly on the 5th (after RxNorm release on 1st Monday)"
+  },
+  "data_quality": {
+    "critical_null_threshold": 0.05,
+    "required_columns": {
+      "rxnconso": ["rxcui", "str", "tty"],
+      "rxnsat": ["rxcui", "atn", "atv"],
+      "rxnrel": ["rxcui1", "rxcui2", "rel"]
+    },
+    "expected_record_count_min": {
+      "rxnconso": 100000,
+      "rxnsat": 500000,
+      "rxnrel": 200000
+    }
+  },
+  "tables": {
+    "rxnconso": "Main concepts and names",
+    "rxnrel": "Relationships between concepts",
+    "rxnsat": "Additional attributes including NDC mappings",
+    "rxnsty": "Semantic types",
+    "rxncui": "CUI change/history tracking",
+    "rxnatomarchive": "Historical atom archive for tracking changes"
+  }
+}
