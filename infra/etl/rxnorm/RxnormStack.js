@@ -45,7 +45,7 @@ class RxnormStack extends cdk.Stack {
       rxcuiChangesJob: `${etlConfig.warehouse_prefix}-gold-rxcui-changes`,
       goldEnrichmentJob: `${etlConfig.warehouse_prefix}-gold-rxnorm-ndc-mapping`,
       // Crawlers for each major table
-      rxconsoCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxnconso-crawler`,
+      rxnconsoCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxnconso-crawler`,
       rxnsatCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxnsat-crawler`,
       rxnrelCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxnrel-crawler`,
       rxnstyCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxnsty-crawler`,
@@ -161,6 +161,10 @@ class RxnormStack extends cdk.Stack {
     bronzeTables.forEach(table => {
       const crawlerName = resourceNames[`${table.name}Crawler`];
 
+      if (!crawlerName) {
+        throw new Error(`Crawler name not found for table: ${table.name}. Check resourceNames object.`);
+      }
+
       new glue.CfnCrawler(this, `Bronze${table.name.charAt(0).toUpperCase() + table.name.slice(1)}Crawler`, {
         name: crawlerName,
         role: rxnormGlueRole.roleArn,
@@ -241,7 +245,7 @@ class RxnormStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "BronzeCrawlerNames", {
       value: JSON.stringify({
-        rxnconso: resourceNames.rxconsoCrawler,
+        rxnconso: resourceNames.rxnconsoCrawler,
         rxnsat: resourceNames.rxnsatCrawler,
         rxnrel: resourceNames.rxnrelCrawler,
         rxnsty: resourceNames.rxnstyCrawler,
