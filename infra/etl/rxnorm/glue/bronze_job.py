@@ -299,74 +299,111 @@ try:
     session = requests.Session()
     session.headers.update({'User-Agent': 'AWS-Glue-ETL/1.0'})
 
-    print("Starting download with cookies and redirect following...")
-    download_response = session.get(download_url_with_ticket, timeout=600, allow_redirects=True)
+    # Memory-efficient download using temporary file and streaming
+    print("Starting streaming download with cookies and redirect following...")
 
-    print(f"Download response status: {download_response.status_code}")
-    print(f"Final URL after redirects: {download_response.url}")
-    print(f"Content-Type: {download_response.headers.get('Content-Type', 'Unknown')}")
-    print(f"Content-Length: {download_response.headers.get('Content-Length', 'Unknown')}")
+    import tempfile
+    import shutil
+    from urllib.error import URLError, HTTPError
+    import time
 
-    if download_response.status_code != 200:
-        print(f"Download failed with status {download_response.status_code}")
-        print(f"Response content: {download_response.text[:1000]}")
-        raise Exception(f"Download failed with status {download_response.status_code}")
-
-    zip_data = download_response.content
-    print(f"Downloaded {len(zip_data)} bytes")
-
-    # Check if the downloaded data looks like a zip file
-    if len(zip_data) < 100:
-        print(f"Downloaded data too small, likely an error. Content:")
-        print(zip_data.decode('utf-8', errors='ignore')[:1000])
-        raise Exception("Downloaded file too small to be RxNORM zip")
-
-    # Check zip file magic number
-    if not zip_data.startswith(b'PK'):
-        print("Downloaded data doesn't start with zip magic number (PK)")
-        print(f"First 100 bytes: {zip_data[:100]}")
-        print(f"Content as text:")
-        print(zip_data[:1000].decode('utf-8', errors='ignore'))
-        raise Exception("Downloaded file is not a valid zip file")
-
-    # Step 2: Save original zip file to raw layer
     s3_client = boto3.client('s3')
     zip_key = f"raw/{dataset}/run_id={run_id}/RxNorm_full_{release_date}.zip"
 
-    s3_client.put_object(
-        Bucket=bucket_name,
-        Key=zip_key,
-        Body=zip_data,
-        ContentType='application/zip'
-    )
-    print(f"Saved original zip to: s3://{bucket_name}/{zip_key}")
+    max_retries = 3
+    content_length = None
 
-    # Step 3: Extract and save RRF files to raw layer
-    print("Extracting RRF files from zip...")
-    rrf_files = {}
+    for attempt in range(max_retries):
+        try:
+            print(f"Download attempt {attempt + 1}/{max_retries}")
 
-    with zipfile.ZipFile(BytesIO(zip_data)) as z:
-        for file_name in z.namelist():
-            if file_name.startswith('rrf/') and file_name.upper().endswith('.RRF'):
-                print(f"Processing file: {file_name}")
+            # Stream download with requests to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.zip', delete=True) as tmp_file:
+                print("Starting authenticated streaming download...")
 
-                with z.open(file_name) as rrf_file:
-                    rrf_data = rrf_file.read()
+                with session.get(download_url_with_ticket, timeout=600, allow_redirects=True, stream=True) as download_response:
+                    print(f"Download response status: {download_response.status_code}")
+                    print(f"Final URL after redirects: {download_response.url}")
+                    print(f"Content-Type: {download_response.headers.get('Content-Type', 'Unknown')}")
 
-                    # Clean filename for S3 key
-                    clean_filename = file_name.replace('rrf/', '')
-                    rrf_key = f"raw/{dataset}/run_id={run_id}/{clean_filename}"
+                    content_length = download_response.headers.get('Content-Length')
+                    if content_length:
+                        print(f"Content-Length: {int(content_length):,} bytes")
 
-                    s3_client.put_object(
-                        Bucket=bucket_name,
-                        Key=rrf_key,
-                        Body=rrf_data,
-                        ContentType='text/plain; charset=utf-8'
-                    )
+                    if download_response.status_code != 200:
+                        print(f"Download failed with status {download_response.status_code}")
+                        print(f"Response content: {download_response.text[:1000]}")
+                        raise Exception(f"Download failed with status {download_response.status_code}")
 
-                    rrf_files[clean_filename] = rrf_key
+                    # Stream to temp file in chunks (memory efficient for large files)
+                    for chunk in download_response.iter_content(chunk_size=8192):
+                        if chunk:  # Filter out keep-alive chunks
+                            tmp_file.write(chunk)
 
-    print(f"Extracted and saved {len(rrf_files)} RRF files: {list(rrf_files.keys())}")
+                print(f"Downloaded to temporary file")
+
+                # Basic validation: check file size
+                tmp_file.seek(0, 2)  # Seek to end
+                file_size = tmp_file.tell()
+                tmp_file.seek(0)  # Reset to beginning
+
+                if file_size < 100:
+                    raise Exception(f"Downloaded file too small ({file_size} bytes) to be RxNORM zip")
+
+                print(f"Downloaded {file_size:,} bytes")
+
+                # Check zip file magic number
+                magic_bytes = tmp_file.read(2)
+                tmp_file.seek(0)  # Reset to beginning
+
+                if magic_bytes != b'PK':
+                    raise Exception("Downloaded file is not a valid zip file (missing PK magic number)")
+
+                print(f"Validated zip file ({file_size:,} bytes)")
+
+                # Upload original zip to S3 for lineage
+                s3_client.upload_fileobj(tmp_file, bucket_name, zip_key)
+                print(f"Uploaded original zip to: s3://{bucket_name}/{zip_key}")
+
+                # Extract RRF files and upload to S3
+                tmp_file.seek(0)
+                rrf_files = {}
+
+                print("Extracting RRF files from zip...")
+                with zipfile.ZipFile(tmp_file, 'r') as zip_ref:
+                    for file_info in zip_ref.infolist():
+                        if not file_info.is_dir() and file_info.filename.startswith('rrf/') and file_info.filename.upper().endswith('.RRF'):
+                            print(f"Processing file: {file_info.filename}")
+
+                            with zip_ref.open(file_info) as rrf_file:
+                                # Clean filename for S3 key
+                                clean_filename = file_info.filename.replace('rrf/', '')
+                                rrf_key = f"raw/{dataset}/run_id={run_id}/{clean_filename}"
+
+                                # Stream RRF file directly to S3
+                                s3_client.upload_fileobj(
+                                    rrf_file,
+                                    bucket_name,
+                                    rrf_key
+                                )
+                                rrf_files[clean_filename] = rrf_key
+
+                print(f"Successfully extracted and uploaded {len(rrf_files)} RRF files: {list(rrf_files.keys())}")
+                break  # Success, exit retry loop
+
+        except (requests.RequestException, Exception) as e:
+            print(f"Error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff
+                print(f"Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
+
+                # Re-authenticate for retry
+                print("Re-authenticating for retry...")
+                service_ticket = authenticate_umls(api_key)
+                download_url_with_ticket = f"{download_url}?ticket={service_ticket}"
+            else:
+                raise
 
     # Step 4: Process each RRF table
     for rrf_filename, rrf_key in rrf_files.items():
@@ -435,7 +472,7 @@ try:
 
     print(f"\nComplete RxNORM ETL finished successfully:")
     print(f"  - Release date: {release_date}")
-    print(f"  - Downloaded: {len(zip_data)} bytes")
+    print(f"  - Downloaded: {content_length or 'unknown'} bytes")
     print(f"  - RRF files processed: {len([t for t in tables_to_process if f'{t}.RRF' in [f.upper() for f in rrf_files.keys()]])}")
     print(f"  - Bronze tables created: {len(tables_to_process)}")
     print("Note: Run crawlers manually to update Athena catalog")
