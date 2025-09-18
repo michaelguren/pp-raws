@@ -6,6 +6,7 @@ const { FdaNsdeStack } = require('./etl/fda-nsde/FdaNsdeStack');
 const { FdaCderStack } = require('./etl/fda-cder/FdaCderStack');
 const { FdaAllNdcStack } = require('./etl/fda-all-ndc/FdaAllNdcStack');
 const { RxnormStack } = require('./etl/rxnorm/RxnormStack');
+const { RxnormSplMappingsStack } = require('./etl/rxnorm-spl-mappings/RxnormSplMappingsStack');
 
 const app = new cdk.App();
 
@@ -59,11 +60,22 @@ const rxnormStack = new RxnormStack(app, 'pp-dw-etl-rxnorm', {
   }
 });
 
+// RxNORM SPL Mappings dataset ETL stack
+const rxnormSplMappingsStack = new RxnormSplMappingsStack(app, 'pp-dw-etl-rxnorm-spl-mappings', {
+  description: 'RxNORM SPL Mappings ETL pipeline - DailyMed SET ID mappings',
+  etlCoreStack: etlCoreStack,
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION || 'us-east-1'
+  }
+});
+
 // Ensure dataset stacks depend on core infrastructure
 fdaNsdeStack.addDependency(etlCoreStack);
 fdaCderStack.addDependency(etlCoreStack);
 fdaAllNdcStack.addDependency(etlCoreStack);
 rxnormStack.addDependency(etlCoreStack);
+rxnormSplMappingsStack.addDependency(etlCoreStack);
 
 // GOLD layer depends on bronze layer data
 fdaAllNdcStack.addDependency(fdaNsdeStack);

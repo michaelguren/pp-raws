@@ -122,47 +122,79 @@ try:
     # Step 1: Download and save raw data
     print(f"Downloading from: {source_url}")
     
-    # Download with timeout
-    with urllib.request.urlopen(source_url, timeout=300) as response:
-        zip_data = response.read()
-    
-    print(f"Downloaded {len(zip_data)} bytes")
-    
-    # Save original zip file to raw layer for lineage
+    # Memory-efficient download and extraction using temporary file
     s3_client = boto3.client('s3')
     zip_key = f"raw/{dataset}/run_id={run_id}/source.zip"
-    
-    s3_client.put_object(
-        Bucket=bucket_name,
-        Key=zip_key,
-        Body=zip_data,
-        ContentType='application/zip'
-    )
-    print(f"Saved original zip to: s3://{bucket_name}/{zip_key}")
-    
-    # Extract and save TXT files to raw layer (handling encoding)
+
+    import tempfile
+    import shutil
+    from urllib.error import URLError, HTTPError
+    import time
+
+    max_retries = 3
+    content_length = None
     txt_files = {}
-    with zipfile.ZipFile(BytesIO(zip_data)) as z:
-        for file_name in z.namelist():
-            if file_name.lower().endswith('.txt'):
-                print(f"Processing file: {file_name}")
-                with z.open(file_name) as txt_file:
-                    # Read as bytes and decode from ISO-8859-1 to UTF-8
-                    raw_data = txt_file.read()
-                    decoded_data = raw_data.decode('iso-8859-1').encode('utf-8')
-                    
-                    txt_key = f"raw/{dataset}/run_id={run_id}/{file_name}"
-                    
-                    s3_client.put_object(
-                        Bucket=bucket_name,
-                        Key=txt_key,
-                        Body=decoded_data,
-                        ContentType='text/plain; charset=utf-8'
-                    )
-                    
-                    txt_files[file_name] = txt_key
-    
-    print(f"Extracted and saved {len(txt_files)} TXT files to raw layer: {list(txt_files.keys())}")
+
+    for attempt in range(max_retries):
+        try:
+            print(f"Download attempt {attempt + 1}/{max_retries}")
+
+            with tempfile.NamedTemporaryFile(suffix='.zip', delete=True) as tmp_file:
+                # Stream download to temporary file
+                with urllib.request.urlopen(source_url, timeout=300) as response:
+                    # Get content length if available
+                    content_length = response.headers.get('Content-Length')
+                    if content_length:
+                        print(f"File size: {int(content_length):,} bytes")
+
+                    # Stream to temp file in chunks (memory efficient)
+                    shutil.copyfileobj(response, tmp_file)
+
+                print(f"Downloaded to temporary file")
+
+                # Upload original zip to S3 for lineage
+                tmp_file.seek(0)
+                s3_client.upload_fileobj(tmp_file, bucket_name, zip_key)
+                print(f"Uploaded original zip to: s3://{bucket_name}/{zip_key}")
+
+                # Extract TXT files and upload to S3 (with encoding conversion)
+                tmp_file.seek(0)
+
+                with zipfile.ZipFile(tmp_file, 'r') as zip_ref:
+                    for file_info in zip_ref.infolist():
+                        if not file_info.is_dir() and file_info.filename.lower().endswith('.txt'):
+                            print(f"Processing file: {file_info.filename}")
+
+                            with zip_ref.open(file_info) as txt_file:
+                                # Read as bytes and decode from ISO-8859-1 to UTF-8
+                                raw_data = txt_file.read()
+                                decoded_data = raw_data.decode('iso-8859-1').encode('utf-8')
+
+                                txt_key = f"raw/{dataset}/run_id={run_id}/{file_info.filename}"
+
+                                # Upload decoded text file to S3
+                                s3_client.put_object(
+                                    Bucket=bucket_name,
+                                    Key=txt_key,
+                                    Body=decoded_data,
+                                    ContentType='text/plain; charset=utf-8'
+                                )
+                                txt_files[file_info.filename] = txt_key
+
+                print(f"Successfully extracted and uploaded {len(txt_files)} TXT files: {list(txt_files.keys())}")
+                break  # Success, exit retry loop
+
+        except (URLError, HTTPError) as e:
+            print(f"Network error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff
+                print(f"Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
+            else:
+                raise
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            raise
     
     if 'product.txt' not in txt_files or 'package.txt' not in txt_files:
         raise ValueError(f"Required files not found. Available files: {list(txt_files.keys())}")
@@ -264,7 +296,7 @@ try:
     print(f"Successfully processed {packages_row_count} package records to bronze layer")
     
     print(f"Complete CDER ETL finished successfully:")
-    print(f"  - Downloaded: {len(zip_data)} bytes")
+    print(f"  - Downloaded: {content_length or 'unknown'} bytes")
     print(f"  - Raw files: {len(txt_files)} TXT files saved")
     print(f"  - Products bronze records: {products_row_count} processed")
     print(f"  - Packages bronze records: {packages_row_count} processed")

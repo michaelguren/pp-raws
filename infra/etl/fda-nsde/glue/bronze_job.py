@@ -81,45 +81,75 @@ NSDE_COLUMN_MAPPING = {
 }
 
 try:
-    # Step 1: Download and save raw data
+    # Step 1: Memory-efficient download and extraction using temporary file
     print(f"Downloading from: {source_url}")
-    
-    # Download with timeout
-    with urllib.request.urlopen(source_url, timeout=300) as response:
-        zip_data = response.read()
-    
-    print(f"Downloaded {len(zip_data)} bytes")
-    
-    # Save original zip file to raw layer for lineage
+
     s3_client = boto3.client('s3')
     zip_key = f"raw/{dataset}/run_id={run_id}/source.zip"
-    
-    s3_client.put_object(
-        Bucket=bucket_name,
-        Key=zip_key,
-        Body=zip_data,
-        ContentType='application/zip'
-    )
-    print(f"Saved original zip to: s3://{bucket_name}/{zip_key}")
-    
-    # Extract and save CSV files to raw layer
-    csv_count = 0
-    with zipfile.ZipFile(BytesIO(zip_data)) as z:
-        for file_name in z.namelist():
-            if file_name.lower().endswith('.csv'):
-                with z.open(file_name) as csv_file:
-                    csv_data = csv_file.read()
-                    csv_key = f"raw/{dataset}/run_id={run_id}/{file_name}"
-                    
-                    s3_client.put_object(
-                        Bucket=bucket_name,
-                        Key=csv_key,
-                        Body=csv_data,
-                        ContentType='text/csv'
-                    )
-                    csv_count += 1
-    
-    print(f"Extracted and saved {csv_count} CSV files to raw layer")
+
+    import tempfile
+    import shutil
+    from urllib.error import URLError, HTTPError
+    import time
+
+    max_retries = 3
+    content_length = None
+
+    for attempt in range(max_retries):
+        try:
+            print(f"Download attempt {attempt + 1}/{max_retries}")
+
+            with tempfile.NamedTemporaryFile(suffix='.zip', delete=True) as tmp_file:
+                # Stream download to temporary file
+                with urllib.request.urlopen(source_url, timeout=300) as response:
+                    # Get content length if available
+                    content_length = response.headers.get('Content-Length')
+                    if content_length:
+                        print(f"File size: {int(content_length):,} bytes")
+
+                    # Stream to temp file in chunks (memory efficient)
+                    shutil.copyfileobj(response, tmp_file)
+
+                print(f"Downloaded to temporary file")
+
+                # Upload original zip to S3 for lineage
+                tmp_file.seek(0)
+                s3_client.upload_fileobj(tmp_file, bucket_name, zip_key)
+                print(f"Uploaded original zip to: s3://{bucket_name}/{zip_key}")
+
+                # Extract CSV files and upload to S3
+                tmp_file.seek(0)
+                csv_count = 0
+
+                with zipfile.ZipFile(tmp_file, 'r') as zip_ref:
+                    for file_info in zip_ref.infolist():
+                        if not file_info.is_dir() and file_info.filename.lower().endswith('.csv'):
+                            # Stream each CSV file from zip to S3
+                            with zip_ref.open(file_info) as csv_file:
+                                csv_key = f"raw/{dataset}/run_id={run_id}/{file_info.filename}"
+
+                                s3_client.upload_fileobj(
+                                    csv_file,
+                                    bucket_name,
+                                    csv_key
+                                )
+                                print(f"Extracted CSV: {file_info.filename}")
+                                csv_count += 1
+
+                print(f"Successfully extracted and uploaded {csv_count} CSV files")
+                break  # Success, exit retry loop
+
+        except (URLError, HTTPError) as e:
+            print(f"Network error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff
+                print(f"Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
+            else:
+                raise
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            raise
     
     # Step 2: Read CSV files from raw path for transformation
     print(f"Reading CSV from: {raw_path}*.csv")
@@ -165,7 +195,7 @@ try:
     print(f"Successfully processed {row_count} records to bronze layer")
     
     print(f"Complete ETL finished successfully:")
-    print(f"  - Downloaded: {len(zip_data)} bytes")
+    print(f"  - Downloaded: {content_length or 'unknown'} bytes")
     print(f"  - Raw files: {csv_count} CSVs saved")
     print(f"  - Bronze records: {row_count} processed")
     print("Note: Run crawler manually via console if schema changes are needed")

@@ -1,0 +1,28 @@
+{
+  "dataset": "rxnorm-spl-mappings",
+  "source_url": "ftp://public.nlm.nih.gov/nlmdata/.dailymed/rxnorm_mappings.zip",
+  "description": "RxNORM to SPL SET ID mappings from DailyMed",
+  "data_size_category": "small",
+  "schedule": {
+    "enabled": false,
+    "expression": "cron(0 3 * * ? *)",
+    "description": "Daily at 3 AM UTC (DailyMed updates daily)"
+  },
+  "data_quality": {
+    "critical_null_threshold": 0.05,
+    "required_columns": ["set_id", "rxcui", "rx_string"],
+    "expected_record_count_min": 10000
+  },
+  "column_mappings": {
+    "SETID": "set_id",
+    "SPL_VERSION": "spl_version",
+    "RXCUI": "rxcui",
+    "RXSTRING": "rx_string",
+    "RXTTY": "rx_tty"
+  },
+  "file_format": {
+    "delimiter": "|",
+    "header": true,
+    "encoding": "ISO-8859-15"
+  }
+}

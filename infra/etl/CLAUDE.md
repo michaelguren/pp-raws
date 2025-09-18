@@ -173,8 +173,50 @@ The single Glue job handles:
 5. **Schema Update**: Trigger crawler for Athena table updates
 
 - **Complete autonomy**: One job does everything from download to Athena-ready data
-- **Clear lineage**: Raw files preserved with run_id for full traceability  
+- **Clear lineage**: Raw files preserved with run_id for full traceability
 - **Worker sizing is automatic** based on dataset's `data_size_category`
+
+### Critical Implementation Patterns
+
+**✅ ALWAYS Follow These Patterns:**
+
+**1. Memory-Efficient File Processing:**
+- Use temporary files with `tempfile.NamedTemporaryFile()` for downloads
+- Stream directly to S3 with `s3_client.upload_fileobj()` - never load entire files into memory
+- Download once, upload to S3, then extract from temp file (avoid double downloads)
+- Include retry logic with exponential backoff for network failures
+- Stream extracted files directly to S3 using `zipfile` and `upload_fileobj()`
+
+**2. Glue Job Structure:**
+- Always include `'JOB_NAME'` in `getResolvedOptions()` - critical for job initialization
+- Use `SparkContext()` not `SparkContext.getOrCreate()`
+- Configure Spark compression immediately after initialization
+- Read data from S3 paths with Spark - never from local filesystem
+
+**3. Data Flow Philosophy:**
+- **Raw Layer**: Preserve original files exactly as downloaded for lineage
+- **S3-First**: All data processing happens via S3, never local files
+- **Streaming**: Handle files of any size without memory constraints
+- **Retry Resilience**: Network operations must handle transient failures
+
+**❌ NEVER Do These (Common Mistakes):**
+- ❌ Load entire files into memory with `response.read()`
+- ❌ Read from local filesystem with `file://` paths
+- ❌ Omit retry logic for network operations
+- ❌ Try to create Glue catalog tables in jobs (let crawlers handle schema)
+- ❌ Download the same file multiple times
+- ❌ Leave undefined variable references when refactoring (always search for old variable names)
+
+### Code Refactoring Checklist
+
+When updating jobs to streaming approach:
+
+1. **Before making changes**: Search entire file for `zip_data`, `csv_data`, `response.read()`
+2. **Replace download logic**: Use temporary file + `shutil.copyfileobj()`
+3. **Replace upload logic**: Use `s3_client.upload_fileobj()` instead of `put_object(Body=data)`
+4. **Update size reporting**: Replace `len(zip_data)` with `content_length or 'unknown'`
+5. **Test deployment**: Always deploy and test after refactoring
+6. **Final verification**: Search again for old variable names to ensure none remain
 
 ### Autonomous Table Management
 
