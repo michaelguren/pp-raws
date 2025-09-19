@@ -1,0 +1,25 @@
+{
+  "dataset": "rxclass",
+  "source_url": "https://rxnav.nlm.nih.gov/REST/rxclass/classTypes.json",
+  "description": "RxClass drug classification hierarchy from NLM RxNav API",
+  "data_size_category": "small",
+  "schedule": {
+    "enabled": true,
+    "expression": "cron(0 3 1 * ? *)",
+    "description": "Monthly on the 1st at 3 AM (after RxNorm updates)"
+  },
+  "data_quality": {
+    "critical_null_threshold": 0.01,
+    "required_columns": ["class_id", "class_name", "class_type"],
+    "expected_record_count_min": 1000
+  },
+  "api_endpoints": {
+    "class_types": "https://rxnav.nlm.nih.gov/REST/rxclass/classTypes.json",
+    "all_classes": "https://rxnav.nlm.nih.gov/REST/rxclass/allClasses.json"
+  },
+  "processing_notes": {
+    "method": "Multi-step API collection - get class types, then iterate for all classes",
+    "rate_limiting": "Respectful delays between API calls to avoid overwhelming NLM servers",
+    "data_format": "JSON API responses aggregated into single dataset"
+  }
+}

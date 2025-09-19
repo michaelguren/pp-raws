@@ -207,6 +207,76 @@ The single Glue job handles:
 - ❌ Download the same file multiple times
 - ❌ Leave undefined variable references when refactoring (always search for old variable names)
 
+### API-Based ETL Patterns
+
+**When Source is REST API (not file downloads):**
+
+**✅ API Collection Best Practices:**
+- Use `urllib.request` with proper headers (`User-Agent`, `Accept`, `Connection: close`)
+- Implement respectful rate limiting between API calls (0.5-1 second delays)
+- Include timeout handling (30+ seconds for API calls)
+- Save raw API responses as JSON for lineage (not just final aggregated data)
+- Include retry logic with exponential backoff for network failures
+- Handle pagination if API supports it
+- Log progress for multi-step collection processes
+
+**API ETL Job Arguments:**
+- Pass API endpoint URLs as separate arguments (not single `source_url`)
+- Include API-specific parameters (rate limits, timeout values)
+- Example: `--class_types_url`, `--all_classes_url`, `--api_key_secret_name`
+
+**Hierarchical API Collection Pattern:**
+
+For APIs requiring multiple calls (get list → iterate details):
+
+```python
+# Step 1: Fetch master list (e.g., class types)
+master_data = fetch_json_with_retry(master_url)
+save_raw_json_to_s3(master_data, "master_response.json")
+
+# Step 2: Extract items to iterate
+items = extract_items_from_response(master_data)
+
+# Step 3: Iterate with respectful delays
+all_details = []
+for i, item in enumerate(items):
+    detail_data = fetch_json_with_retry(detail_url_for_item(item))
+    save_raw_json_to_s3(detail_data, f"detail_{safe_filename(item)}.json")
+    all_details.extend(extract_details(detail_data))
+
+    # Be respectful - delay between requests
+    if i < len(items) - 1:
+        time.sleep(0.5)
+
+# Step 4: Aggregate and save complete dataset
+aggregated_data = {
+    "metadata": {"run_id": run_id, "total_items": len(all_details)},
+    "data": all_details
+}
+save_raw_json_to_s3(aggregated_data, "complete_dataset.json")
+```
+
+**API Error Handling:**
+```python
+def fetch_json_with_retry(url, max_retries=3, delay=1):
+    for attempt in range(max_retries):
+        try:
+            headers = {
+                'User-Agent': 'AWS-Glue-ETL-Job/1.0',
+                'Accept': 'application/json',
+                'Connection': 'close'
+            }
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode('utf-8'))
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+            else:
+                raise Exception(f"Failed after {max_retries} attempts: {str(e)}")
+```
+
 ### Code Refactoring Checklist
 
 When updating jobs to streaming approach:
@@ -240,11 +310,34 @@ When updating jobs to streaming approach:
 - Ensure Athena queries work immediately after job completion
 
 ### Performance Optimization
+
 **Worker Configuration by Data Size (AWS Best Practices):**
-- **Small** (<100MB): G.1X with 2 workers - Minimum viable configuration
-- **Medium** (100MB-1GB): G.1X with 5 workers - Optimal for 5-10 DPU recommendation
-- **Large** (1GB-5GB): G.1X with 10 workers - Horizontal scaling for parallelism
-- **XLarge** (>5GB): G.2X with 10 workers - Vertical + horizontal scaling for memory-intensive workloads
+
+**API/Small Data (<1000 records)**:
+- **Configuration**: G.1X with 2 workers - Minimum viable configuration
+- **Typical sources**: Classification systems, lookup tables, REST API responses
+- **Processing time**: <5 minutes
+- **Examples**: RxClass, drug vocabularies, reference data, regulatory lookups
+
+**File/Small Data (<100MB)**:
+- **Configuration**: G.1X with 2 workers - Minimum viable configuration
+- **Typical sources**: Small CSV files, compressed archives
+- **Examples**: Small regulatory datasets, configuration files
+
+**File/Medium Data (100MB-1GB)**:
+- **Configuration**: G.1X with 5 workers - Optimal for 5-10 DPU recommendation
+- **Typical sources**: Medium CSV files, ZIP archives
+- **Examples**: FDA NSDE, medium regulatory datasets
+
+**File/Large Data (1GB-5GB)**:
+- **Configuration**: G.1X with 10 workers - Horizontal scaling for parallelism
+- **Typical sources**: Large ZIP files, multiple CSV files
+- **Examples**: Comprehensive drug databases, large regulatory exports
+
+**File/XLarge Data (>5GB)**:
+- **Configuration**: G.2X with 10 workers - Vertical + horizontal scaling for memory-intensive workloads
+- **Typical sources**: Very large archives, complex nested datasets
+- **Examples**: RxNORM full releases, comprehensive medical vocabularies
 
 ### CDK Development Guidelines
 
