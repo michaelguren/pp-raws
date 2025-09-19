@@ -98,7 +98,9 @@ class RxnormStack extends cdk.Stack {
         "--compression_codec": "zstd",
         "--bucket_name": bucketName,
         "--umls_api_secret": "umls-api-key",
-        "--tables_to_process": "RXNCONSO,RXNSAT,RXNREL,RXNSTY,RXNCUI,RXNATOMARCHIVE"
+        "--tables_to_process": "RXNCONSO,RXNSAT,RXNREL,RXNSTY,RXNCUI,RXNATOMARCHIVE",
+        // Default logging arguments (from ETL config)
+        ...etlConfig.glue_defaults.logging_arguments,
       },
     });
 
@@ -194,7 +196,7 @@ class RxnormStack extends cdk.Stack {
       targets: {
         s3Targets: [
           {
-            path: `${goldBasePath}gold_rxcui_changes/`
+            path: `s3://${bucketName}/${goldPath}gold_rxcui_changes/`
           }
         ]
       },
@@ -214,7 +216,7 @@ class RxnormStack extends cdk.Stack {
       targets: {
         s3Targets: [
           {
-            path: `${goldBasePath}gold_rxnorm_ndc_mapping/`
+            path: `s3://${bucketName}/${goldPath}gold_rxnorm_ndc_mapping/`
           }
         ]
       },
