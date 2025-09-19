@@ -201,7 +201,7 @@ try:
         raise Exception(f"Too many null class_ids: {null_class_ids}")
 
     # Write to Bronze layer (kill-and-fill approach)
-    print(f"Writing to Bronze layer: s3://{bucket_name}/{bronze_path}")
+    print(f"Writing to Bronze layer: {bronze_s3_path}")
 
     df.coalesce(1).write \
         .mode("overwrite") \

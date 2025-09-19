@@ -186,7 +186,7 @@ try:
     df_bronze = df.withColumn("meta_run_id", lit(run_id))
     
     # Write to bronze layer (overwrite for kill-and-fill approach)
-    print(f"Writing to: {bronze_path}")
+    print(f"Writing to: {bronze_s3_path}")
     
     df_bronze.write \
              .mode("overwrite") \
