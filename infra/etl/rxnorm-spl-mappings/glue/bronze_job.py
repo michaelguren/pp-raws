@@ -60,10 +60,14 @@ column_mappings = {
 }
 
 def download_and_process_file():
-    """Memory-efficient HTTPS download of pipe-delimited text file"""
-    print(f"Downloading from: {source_url}")
+    """Memory-efficient HTTPS download and extraction of ZIP file containing pipe-delimited text"""
+    print(f"Downloading ZIP from: {source_url}")
 
+    import tempfile
+    import shutil
+    import zipfile
     s3_client = boto3.client('s3')
+    zip_key = f"raw/{dataset}/run_id={run_id}/rxnorm_mappings.zip"
     txt_key = f"raw/{dataset}/run_id={run_id}/{txt_filename}"
 
     from urllib.error import URLError, HTTPError
@@ -75,23 +79,46 @@ def download_and_process_file():
         try:
             print(f"Download attempt {attempt + 1}/{max_retries}")
 
-            # Stream download directly to S3
-            with urllib.request.urlopen(source_url, timeout=300) as response:
-                content_length = response.headers.get('Content-Length')
-                if content_length:
-                    print(f"File size: {int(content_length):,} bytes")
+            # Stream download to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.zip', delete=True) as tmp_file:
+                with urllib.request.urlopen(source_url, timeout=300) as response:
+                    content_length = response.headers.get('Content-Length')
+                    if content_length:
+                        print(f"ZIP file size: {int(content_length):,} bytes")
 
-                print(f"Content-Type: {response.headers.get('Content-Type', 'Unknown')}")
+                    print(f"Content-Type: {response.headers.get('Content-Type', 'Unknown')}")
 
-                # Stream pipe-delimited text file directly to S3
-                s3_client.upload_fileobj(
-                    response,
-                    bucket_name,
-                    txt_key
-                )
-                print(f"Streamed text file to: s3://{bucket_name}/{txt_key}")
+                    # Stream ZIP to temp file
+                    shutil.copyfileobj(response, tmp_file)
+                    tmp_file.flush()
 
-            print(f"Successfully downloaded and uploaded pipe-delimited file")
+                print(f"Downloaded ZIP to temporary file")
+
+                # Upload original ZIP to S3 for lineage
+                tmp_file.seek(0)
+                s3_client.upload_file(tmp_file.name, bucket_name, zip_key)
+                print(f"Uploaded original ZIP to: s3://{bucket_name}/{zip_key}")
+
+                # Extract rxnorm_mappings.txt from ZIP and upload to S3
+                tmp_file.seek(0)
+                with zipfile.ZipFile(tmp_file, 'r') as zip_ref:
+                    # List all files in ZIP
+                    all_files = zip_ref.namelist()
+                    print(f"Files in ZIP: {all_files}")
+
+                    # Look for rxnorm_mappings.txt specifically
+                    target_file = "rxnorm_mappings.txt"
+                    if target_file not in all_files:
+                        raise Exception(f"Expected file '{target_file}' not found in ZIP. Available files: {all_files}")
+
+                    print(f"Extracting: {target_file}")
+
+                    with zip_ref.open(target_file) as extracted_file:
+                        # Upload extracted text file to S3
+                        s3_client.upload_fileobj(extracted_file, bucket_name, txt_key)
+                        print(f"Uploaded extracted text file to: s3://{bucket_name}/{txt_key}")
+
+            print(f"Successfully downloaded ZIP and extracted text file")
             return  # Success, exit retry loop
 
         except (URLError, HTTPError) as e:
@@ -131,13 +158,45 @@ def process_csv_to_bronze():
             StructField("RXTTY", StringType(), True)
         ])
 
-        # Read pipe-delimited file from S3
-        df = spark.read \
-            .option("header", "true") \
-            .option("delimiter", "|") \
-            .option("encoding", "UTF-8") \
-            .schema(schema) \
-            .csv(txt_s3_path)
+        # Read pipe-delimited file from S3 with proper encoding
+        # Try different encodings in order of likelihood
+        encodings_to_try = ["UTF-8", "ISO-8859-1", "Windows-1252"]
+        df = None
+        successful_encoding = None
+
+        for encoding in encodings_to_try:
+            try:
+                print(f"Attempting to read with {encoding} encoding...")
+                df = spark.read \
+                    .option("header", "true") \
+                    .option("delimiter", "|") \
+                    .option("encoding", encoding) \
+                    .option("charset", encoding) \
+                    .schema(schema) \
+                    .csv(txt_s3_path)
+
+                # Test read by checking first few rows for garbled characters
+                sample_data = df.limit(5).collect()
+                if sample_data and len(sample_data) > 0:
+                    # Check if we have readable text (no excessive question marks or weird chars)
+                    first_row_str = str(sample_data[0])
+                    if "��" not in first_row_str and not any(ord(c) > 1000 for c in first_row_str if isinstance(c, str)):
+                        successful_encoding = encoding
+                        print(f"Successfully read with {encoding} encoding")
+                        break
+                    else:
+                        print(f"{encoding} encoding produced garbled characters")
+                        df = None
+
+            except Exception as e:
+                print(f"Failed with {encoding} encoding: {str(e)}")
+                df = None
+                continue
+
+        if df is None:
+            raise Exception(f"Could not read file with any supported encoding: {encodings_to_try}")
+
+        print(f"Using {successful_encoding} encoding for final processing")
 
         row_count = df.count()
         print(f"Read {row_count} records from pipe-delimited file")
