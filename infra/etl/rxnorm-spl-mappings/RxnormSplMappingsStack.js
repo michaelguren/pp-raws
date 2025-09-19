@@ -30,9 +30,9 @@ class RxnormSplMappingsStack extends cdk.Stack {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
 
-    // Build S3 paths from warehouse config patterns
-    const rawBasePath = `s3://${bucketName}/raw/${dataset}/`;
-    const bronzeBasePath = `s3://${bucketName}/bronze/bronze_${dataset.replace('-', '_')}/`;
+    // S3 path fragments from warehouse config patterns
+    const rawPath = etlConfig.path_patterns.raw.replace('{dataset}', dataset).replace('run_id={run_id}/', '');
+    const bronzePath = `bronze/bronze_${dataset.replace('-', '_')}/`;
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
@@ -58,8 +58,8 @@ class RxnormSplMappingsStack extends cdk.Stack {
       defaultArguments: {
         "--dataset": dataset,
         "--bronze_database": etlConfig.bronze_database,
-        "--raw_base_path": rawBasePath,
-        "--bronze_base_path": bronzeBasePath,
+        "--raw_path": rawPath,
+        "--bronze_path": bronzePath,
         "--compression_codec": "zstd",
         "--bucket_name": bucketName,
         "--source_url": datasetConfig.source_url,
@@ -78,7 +78,7 @@ class RxnormSplMappingsStack extends cdk.Stack {
       targets: {
         s3Targets: [
           {
-            path: bronzeBasePath
+            path: `s3://${bucketName}/${bronzePath}`
           }
         ]
       },

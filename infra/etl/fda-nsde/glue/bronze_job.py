@@ -16,7 +16,7 @@ from pyspark.sql.functions import lit, col, when, to_date  # type: ignore[import
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'bucket_name', 'dataset',
-    'source_url', 'bronze_database', 'raw_base_path', 'bronze_base_path', 
+    'source_url', 'bronze_database', 'raw_path', 'bronze_path',
     'date_format', 'compression_codec'
 ])
 
@@ -41,17 +41,17 @@ source_url = args['source_url']
 bronze_database = args['bronze_database']
 date_format = args['date_format']
 
-# Build paths from pre-computed base paths
-raw_base_path = args['raw_base_path']
-bronze_base_path = args['bronze_base_path']
+# Build full S3 paths from path fragments
+raw_path_fragment = args['raw_path']
+bronze_path_fragment = args['bronze_path']
 
-raw_path = f"{raw_base_path}run_id={run_id}/"
-bronze_path = bronze_base_path.rstrip('/')
+raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
+bronze_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}"
 
 print(f"Starting Complete ETL for {dataset} (download + transform)")
 print(f"Source URL: {source_url}")
-print(f"Raw path: {raw_path}")
-print(f"Bronze path: {bronze_path}")
+print(f"Raw path: {raw_s3_path}")
+print(f"Bronze path: {bronze_s3_path}")
 print(f"Run ID: {run_id}")
 print(f"Date format: {date_format}")
 print(f"Bronze database: {bronze_database}")
@@ -85,7 +85,7 @@ try:
     print(f"Downloading from: {source_url}")
 
     s3_client = boto3.client('s3')
-    zip_key = f"raw/{dataset}/run_id={run_id}/source.zip"
+    zip_key = f"{raw_path_fragment}run_id={run_id}/source.zip"
 
     import tempfile
     import shutil
@@ -127,7 +127,7 @@ try:
                         if not file_info.is_dir() and file_info.filename.lower().endswith('.csv'):
                             # Stream each CSV file from zip to S3
                             with zip_ref.open(file_info) as csv_file:
-                                csv_key = f"raw/{dataset}/run_id={run_id}/{file_info.filename}"
+                                csv_key = f"{raw_path_fragment}run_id={run_id}/{file_info.filename}"
 
                                 s3_client.upload_fileobj(
                                     csv_file,
@@ -153,11 +153,11 @@ try:
             raise
     
     # Step 2: Read CSV files from raw path for transformation
-    print(f"Reading CSV from: {raw_path}*.csv")
-    
+    print(f"Reading CSV from: {raw_s3_path}*.csv")
+
     df = spark.read.option("header", "true") \
                    .option("inferSchema", "true") \
-                   .csv(f"{raw_path}*.csv")
+                   .csv(f"{raw_s3_path}*.csv")
     
     row_count = df.count()
     print(f"Loaded {row_count} records")
@@ -191,7 +191,7 @@ try:
     df_bronze.write \
              .mode("overwrite") \
              .option("compression", args['compression_codec']) \
-             .parquet(bronze_path)
+             .parquet(bronze_s3_path)
     
     print(f"Successfully processed {row_count} records to bronze layer")
     

@@ -64,10 +64,10 @@ class RxnormStack extends cdk.Stack {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
 
-    // Build S3 paths from warehouse config patterns
-    const rawBasePath = `s3://${bucketName}/raw/${dataset}/`;
-    const bronzeBasePath = `s3://${bucketName}/bronze/${dataset}`;
-    const goldBasePath = `s3://${bucketName}/gold/`;
+    // S3 path fragments from warehouse config patterns
+    const rawPath = etlConfig.path_patterns.raw.replace('{dataset}', dataset).replace('run_id={run_id}/', '');
+    const bronzePath = `bronze/${dataset}`;
+    const goldPath = `gold/`;
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
@@ -93,8 +93,8 @@ class RxnormStack extends cdk.Stack {
       defaultArguments: {
         "--dataset": dataset,
         "--bronze_database": etlConfig.bronze_database,
-        "--raw_base_path": rawBasePath,
-        "--bronze_base_path": bronzeBasePath,
+        "--raw_path": rawPath,
+        "--bronze_path": bronzePath,
         "--compression_codec": "zstd",
         "--bucket_name": bucketName,
         "--umls_api_secret": "umls-api-key",
@@ -150,12 +150,12 @@ class RxnormStack extends cdk.Stack {
 
     // Bronze Crawlers for each RRF table
     const bronzeTables = [
-      { name: "rxnconso", path: `${bronzeBasePath}_rxnconso` },
-      { name: "rxnsat", path: `${bronzeBasePath}_rxnsat` },
-      { name: "rxnrel", path: `${bronzeBasePath}_rxnrel` },
-      { name: "rxnsty", path: `${bronzeBasePath}_rxnsty` },
-      { name: "rxncui", path: `${bronzeBasePath}_rxncui` },
-      { name: "rxnatomarchive", path: `${bronzeBasePath}_rxnatomarchive` }
+      { name: "rxnconso", path: `s3://${bucketName}/${bronzePath}_rxnconso` },
+      { name: "rxnsat", path: `s3://${bucketName}/${bronzePath}_rxnsat` },
+      { name: "rxnrel", path: `s3://${bucketName}/${bronzePath}_rxnrel` },
+      { name: "rxnsty", path: `s3://${bucketName}/${bronzePath}_rxnsty` },
+      { name: "rxncui", path: `s3://${bucketName}/${bronzePath}_rxncui` },
+      { name: "rxnatomarchive", path: `s3://${bucketName}/${bronzePath}_rxnatomarchive` }
     ];
 
     bronzeTables.forEach(table => {

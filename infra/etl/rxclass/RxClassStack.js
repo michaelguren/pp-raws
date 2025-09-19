@@ -30,12 +30,9 @@ class RxClassStack extends cdk.Stack {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
 
-    // Build S3 paths from warehouse config patterns
+    // S3 path fragments from warehouse config patterns
+    const rawPath = etlConfig.path_patterns.raw.replace('{dataset}', dataset).replace('run_id={run_id}/', '');
     const bronzePath = etlConfig.path_patterns.bronze.replace('{dataset}', dataset);
-
-    // Pre-compute simple S3 base paths for Glue jobs
-    const rawBasePath = `s3://${bucketName}/raw/${dataset}/`;
-    const bronzeBasePath = `s3://${bucketName}/bronze/${dataset}/`;
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
@@ -59,15 +56,20 @@ class RxClassStack extends cdk.Stack {
       maxRetries: etlConfig.glue_defaults.max_retries,
       timeout: etlConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
+        // Dataset-specific arguments
         "--dataset": dataset,
         "--class_types_url": datasetConfig.api_endpoints.class_types,
         "--all_classes_url": datasetConfig.api_endpoints.all_classes,
         "--bronze_database": etlConfig.bronze_database,
-        "--raw_base_path": rawBasePath,
-        "--bronze_base_path": bronzeBasePath,
+        "--raw_path": rawPath,
+        "--bronze_path": bronzePath,
         "--compression_codec": "zstd",
         "--bucket_name": bucketName,
-        "--crawler_name": resourceNames.bronzeCrawler,
+        // Default logging arguments (from ETL config)
+        ...etlConfig.glue_defaults.logging_arguments,
+        // Logging-specific overrides
+        "--continuous-log-logStreamPrefix": resourceNames.bronzeJob,
+        "--spark-event-logs-path": `s3://${bucketName}/spark-logs/`
       },
     });
 

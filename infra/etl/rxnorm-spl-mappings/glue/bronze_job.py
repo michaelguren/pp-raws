@@ -18,8 +18,8 @@ args = getResolvedOptions(sys.argv, [
     'JOB_NAME',
     'dataset',
     'bronze_database',
-    'raw_base_path',
-    'bronze_base_path',
+    'raw_path',
+    'bronze_path',
     'compression_codec',
     'bucket_name',
     'source_url'
@@ -38,8 +38,8 @@ spark.conf.set("spark.sql.parquet.compression.codec", args['compression_codec'])
 # Configuration
 dataset = args['dataset']
 bronze_database = args['bronze_database']
-raw_base_path = args['raw_base_path']
-bronze_base_path = args['bronze_base_path']
+raw_path_fragment = args['raw_path']
+bronze_path_fragment = args['bronze_path']
 compression_codec = args['compression_codec']
 bucket_name = args['bucket_name']
 source_url = args['source_url']
@@ -144,7 +144,7 @@ def process_csv_to_bronze():
 
     try:
         # Read text file from S3 raw path
-        raw_s3_path = f"{raw_base_path}run_id={run_id}/"
+        raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
         txt_s3_path = f"{raw_s3_path}{txt_filename}"
 
         print(f"Reading pipe-delimited file from: {txt_s3_path}")
@@ -215,14 +215,14 @@ def process_csv_to_bronze():
         print("Applied column mappings and added metadata")
 
         # Write to Bronze layer (kill-and-fill approach)
-        bronze_table_path = f"{bronze_base_path}"
+        bronze_table_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}"
 
-        print(f"Writing to Bronze layer: {bronze_table_path}")
+        print(f"Writing to Bronze layer: {bronze_table_s3_path}")
 
         df.write \
             .mode("overwrite") \
             .option("compression", compression_codec) \
-            .parquet(bronze_table_path)
+            .parquet(bronze_table_s3_path)
 
         print(f"Successfully wrote {row_count} records to Bronze layer")
 
@@ -250,8 +250,8 @@ def main():
 
         print(f"✅ ETL job completed successfully")
         print(f"   Records processed: {record_count}")
-        print(f"   Raw data: {raw_base_path}run_id={run_id}/{txt_filename}")
-        print(f"   Bronze data: {bronze_base_path}")
+        print(f"   Raw data: s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/{txt_filename}")
+        print(f"   Bronze data: s3://{bucket_name}/{bronze_path_fragment}")
 
     except Exception as e:
         print(f"❌ ETL job failed: {str(e)}")

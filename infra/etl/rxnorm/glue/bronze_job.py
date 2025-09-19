@@ -20,7 +20,7 @@ from pyspark.sql.types import StructType, StructField, StringType
 
 # Get job parameters
 required_args = ['JOB_NAME', 'bucket_name', 'dataset', 'bronze_database',
-                 'raw_base_path', 'bronze_base_path', 'compression_codec',
+                 'raw_path', 'bronze_path', 'compression_codec',
                  'umls_api_secret', 'tables_to_process']
 optional_args = ['release_date']
 
@@ -70,9 +70,9 @@ umls_api_secret = args['umls_api_secret']
 tables_to_process = args['tables_to_process'].split(',')
 
 # Build paths
-raw_base_path = args['raw_base_path']
-bronze_base_path = args['bronze_base_path']
-raw_path = f"{raw_base_path}run_id={run_id}/"
+raw_path_fragment = args['raw_path']
+bronze_path_fragment = args['bronze_path']
+raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
 
 # Build download URL with date
 base_url = "https://download.nlm.nih.gov/umls/kss/rxnorm"
@@ -81,8 +81,8 @@ download_url = f"{base_url}/RxNorm_full_{release_date}.zip"
 print(f"Starting Complete RxNORM ETL for {dataset}")
 print(f"Release date: {release_date}")
 print(f"Download URL: {download_url}")
-print(f"Raw path: {raw_path}")
-print(f"Bronze base path: {bronze_base_path}")
+print(f"Raw path: {raw_s3_path}")
+print(f"Bronze base path: s3://{bucket_name}/{bronze_path_fragment}")
 print(f"Run ID: {run_id}")
 print(f"Tables to process: {tables_to_process}")
 print(f"Mode: overwrite (kill-and-fill)")
@@ -461,13 +461,13 @@ try:
         print(f"{table_name} final columns: {df_bronze.columns}")
 
         # Write to bronze layer
-        bronze_table_path = f"{bronze_base_path}_{table_name.lower()}"
-        print(f"Writing {table_name} to: {bronze_table_path}")
+        bronze_table_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}_{table_name.lower()}"
+        print(f"Writing {table_name} to: {bronze_table_s3_path}")
 
         df_bronze.write \
                  .mode("overwrite") \
                  .option("compression", args['compression_codec']) \
-                 .parquet(bronze_table_path)
+                 .parquet(bronze_table_s3_path)
 
         print(f"Successfully processed {df.count()} {table_name} records to bronze layer")
 

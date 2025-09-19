@@ -20,8 +20,7 @@ from pyspark.sql.types import StructType, StructField, StringType  # type: ignor
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'bucket_name', 'dataset',
     'class_types_url', 'all_classes_url', 'bronze_database',
-    'raw_base_path', 'bronze_base_path', 'compression_codec',
-    'crawler_name'
+    'raw_path', 'bronze_path', 'compression_codec'
 ])
 
 # Initialize Glue
@@ -44,14 +43,13 @@ dataset = args['dataset']
 class_types_url = args['class_types_url']
 all_classes_url = args['all_classes_url']
 bronze_database = args['bronze_database']
-crawler_name = args['crawler_name']
 
-# Build paths from pre-computed base paths
-raw_base_path = args['raw_base_path']
-bronze_base_path = args['bronze_base_path']
+# Build full S3 paths from path fragments
+raw_path_fragment = args['raw_path']
+bronze_path_fragment = args['bronze_path']
 
-raw_path = f"{raw_base_path}run_id={run_id}/"
-bronze_path = bronze_base_path.rstrip('/')
+raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
+bronze_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}"
 
 # Initialize S3 client
 s3_client = boto3.client('s3')
@@ -59,8 +57,8 @@ s3_client = boto3.client('s3')
 print(f"Starting RxClass ETL job")
 print(f"Dataset: {dataset}")
 print(f"Run ID: {run_id}")
-print(f"Raw path: s3://{bucket_name}/{raw_path}")
-print(f"Bronze path: s3://{bucket_name}/{bronze_path}")
+print(f"Raw path: {raw_s3_path}")
+print(f"Bronze path: {bronze_s3_path}")
 
 def fetch_json_with_retry(url, max_retries=3, delay=1):
     """Fetch JSON from URL with retry logic and respectful delays"""
@@ -92,7 +90,7 @@ def fetch_json_with_retry(url, max_retries=3, delay=1):
 def save_raw_json_to_s3(data, filename):
     """Save JSON data to S3 raw layer for lineage"""
     json_content = json.dumps(data, indent=2)
-    s3_key = f"{raw_path}{filename}"
+    s3_key = f"{raw_path_fragment}run_id={run_id}/{filename}"
 
     print(f"Saving raw JSON to s3://{bucket_name}/{s3_key}")
     s3_client.put_object(
@@ -208,23 +206,14 @@ try:
     df.coalesce(1).write \
         .mode("overwrite") \
         .option("compression", args['compression_codec']) \
-        .parquet(f"s3://{bucket_name}/{bronze_path}")
+        .parquet(bronze_s3_path)
 
     print("Successfully wrote Bronze layer data")
 
-    # Step 4: Trigger crawler to update Athena table
-    print("Step 4: Triggering crawler to update schema...")
-    glue_client = boto3.client('glue')
-
-    try:
-        glue_client.start_crawler(Name=crawler_name)
-        print(f"Started crawler: {crawler_name}")
-    except Exception as e:
-        print(f"Warning: Could not start crawler {crawler_name}: {str(e)}")
-
     print("RxClass ETL job completed successfully!")
     print(f"Total records processed: {len(all_rxclasses)}")
-    print(f"Bronze data location: s3://{bucket_name}/{bronze_path}")
+    print(f"Bronze data location: {bronze_s3_path}")
+    print("Note: Run crawler manually via console if schema changes are needed")
 
 except Exception as e:
     print(f"ERROR: RxClass ETL job failed: {str(e)}")

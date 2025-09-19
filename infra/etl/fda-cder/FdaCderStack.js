@@ -35,9 +35,9 @@ class FdaCderStack extends cdk.Stack {
     const bronzeProductsPath = etlConfig.path_patterns.bronze.replace('{dataset}', `${dataset}_products`);
     const bronzePackagesPath = etlConfig.path_patterns.bronze.replace('{dataset}', `${dataset}_packages`);
     
-    // Pre-compute simple S3 base paths for Glue jobs  
-    const rawBasePath = `s3://${bucketName}/raw/${dataset}/`;
-    const bronzeBasePath = `s3://${bucketName}/bronze/${dataset}`;
+    // S3 path fragments from warehouse config patterns
+    const rawPath = etlConfig.path_patterns.raw.replace('{dataset}', dataset).replace('run_id={run_id}/', '');
+    const bronzePath = `bronze/${dataset}`;
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
@@ -64,8 +64,8 @@ class FdaCderStack extends cdk.Stack {
         "--dataset": dataset,
         "--source_url": datasetConfig.source_url,
         "--bronze_database": etlConfig.bronze_database,
-        "--raw_base_path": rawBasePath,
-        "--bronze_base_path": bronzeBasePath,
+        "--raw_path": rawPath,
+        "--bronze_path": bronzePath,
         "--date_format": datasetConfig.date_format,
         "--compression_codec": "zstd",
         "--bucket_name": bucketName,

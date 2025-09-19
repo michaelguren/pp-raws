@@ -101,10 +101,92 @@ s3://pp-dw-{account}/
 - Dataset-specific settings (schedules, data quality rules)
 
 **Glue Job Arguments** - All configuration passed via `defaultArguments`:
-- Pre-computed S3 paths (no runtime string manipulation)
+- Clean S3 path fragments (jobs construct full S3 URLs)
 - Database names, crawler names, timeouts
 - Spark settings, compression codecs
 - Data transformation rules (date formatting, explicit column mappings)
+
+### S3 Path Pattern (CRITICAL)
+
+**✅ STANDARD PATTERN - Always Follow This:**
+
+```javascript
+// In CDK Stack - pass ONLY path fragments
+defaultArguments: {
+  "--bucket_name": bucketName,
+  "--raw_path": `raw/${dataset}/`,           // Just the path fragment
+  "--bronze_path": `bronze/${dataset}/`,     // Just the path fragment
+  // ... other arguments
+}
+```
+
+```python
+# In Glue Job - construct full S3 URLs consistently
+bucket_name = args['bucket_name']
+raw_path_fragment = args['raw_path']
+bronze_path_fragment = args['bronze_path']
+
+# Build full S3 paths in job
+raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
+bronze_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}"
+
+# Write data using full S3 URLs
+df.write.parquet(bronze_s3_path)
+s3_client.upload_fileobj(file_obj, bucket_name, f"{raw_path_fragment}run_id={run_id}/filename.json")
+```
+
+**❌ NEVER Do These (Anti-Patterns):**
+- ❌ Pass full S3 URLs like `s3://bucket/path/` from stack to job
+- ❌ Use `rstrip('/')` or other string manipulation on S3 paths
+- ❌ Mix path fragments with full S3 URLs
+- ❌ Construct S3 URLs in CDK and pass to jobs
+
+**Benefits of This Pattern:**
+- ✅ **Clear separation**: Stack handles config, Job handles S3 construction
+- ✅ **No runtime string manipulation**: Eliminates brittle `rstrip()` calls
+- ✅ **Consistent**: Same pattern across all datasets
+- ✅ **Debuggable**: Easy to see exactly what paths are being used
+
+### CRITICAL: Parameter Name Coordination
+
+**⚠️ DEPLOYMENT BREAKING RULE:**
+
+When updating S3 path patterns, you MUST update BOTH the CDK stack and Glue job parameter names simultaneously. Mismatched parameter names will cause `GlueArgumentError` at runtime.
+
+**Required Coordination Checklist:**
+
+✅ **Stack passes these exact parameter names:**
+```javascript
+defaultArguments: {
+  "--raw_path": rawPath,      // "raw/dataset/"
+  "--bronze_path": bronzePath, // "bronze/dataset/"
+  // ... other args
+}
+```
+
+✅ **Job expects these exact parameter names:**
+```python
+args = getResolvedOptions(sys.argv, [
+    'JOB_NAME', 'bucket_name', 'dataset',
+    'raw_path', 'bronze_path',  # Must match stack exactly
+    # ... other args
+])
+```
+
+✅ **Job uses path fragments correctly:**
+```python
+raw_path_fragment = args['raw_path']
+bronze_path_fragment = args['bronze_path']
+raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
+bronze_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}"
+```
+
+**❌ NEVER update only one side:**
+- ❌ Update stack arguments but not job `getResolvedOptions()`
+- ❌ Update job parameters but not stack `defaultArguments`
+- ❌ Deploy with mismatched parameter names
+
+**Deployment Test:** Always test parameter coordination by deploying and running at least one job before committing changes.
 
 **Benefits**:
 - ✅ **Faster startup**: No S3 config reads during job execution
@@ -293,21 +375,27 @@ When updating jobs to streaming approach:
 **Kill-and-Fill Approach**: Bronze jobs implement simple table management:
 
 1. **Data Overwrite**: Each run completely overwrites the bronze table data
-2. **Schema Updates**: Crawler runs after each job to update table schema automatically
+2. **Schema Updates**: Crawlers run manually when schema changes are needed
 3. **No Partition Management**: Simple single-table structure without partitions
 
 **Benefits:**
 - ✅ **Maximum Simplicity**: No complex partition or merge logic
 - ✅ **Always Fresh**: Complete dataset refresh every run
-- ✅ **Schema Evolution**: Crawler automatically detects schema changes
+- ✅ **Schema Evolution**: Crawler detects schema changes when manually triggered
 - ✅ **Easy Debugging**: Clear data lineage - one run = one complete dataset
 - ✅ **Fast Development**: Perfect for testing and iteration
 
-**Crawler Role**: 
-- Bronze crawlers run after **every job execution**
-- Automatically update table schema based on latest parquet files
-- Handle column additions, type changes, and schema evolution
-- Ensure Athena queries work immediately after job completion
+**Crawler Management Strategy**:
+- **Bronze jobs**: Print manual crawler instruction - do NOT auto-trigger crawlers
+- **Gold/Silver jobs**: May auto-trigger crawlers as they are downstream transformations
+- **First deployment**: Run crawler manually via AWS Console to create initial table
+- **Schema changes**: Run crawler manually when data structure changes
+- **Normal operations**: No crawler needed - existing table schema handles data updates
+
+**Bronze Job Pattern:**
+```python
+print("Note: Run crawler manually via console if schema changes are needed")
+```
 
 ### Performance Optimization
 
@@ -338,6 +426,46 @@ When updating jobs to streaming approach:
 - **Configuration**: G.2X with 10 workers - Vertical + horizontal scaling for memory-intensive workloads
 - **Typical sources**: Very large archives, complex nested datasets
 - **Examples**: RxNORM full releases, comprehensive medical vocabularies
+
+### CloudWatch Logging & Monitoring
+
+**Default Logging Configuration**:
+All Glue jobs automatically inherit CloudWatch logging from the ETL core configuration:
+
+```javascript
+// In config.json - automatically applied to all Glue jobs
+"glue_defaults": {
+  "logging_arguments": {
+    "--enable-metrics": "true",
+    "--enable-continuous-cloudwatch-log": "true",
+    "--enable-continuous-log-filter": "true",
+    "--continuous-log-logGroup": "/aws-glue/jobs/logs-v2",
+    "--enable-spark-ui": "true"
+  }
+}
+
+// In dataset stacks - spread the default logging arguments
+defaultArguments: {
+  // Dataset-specific arguments...
+  "--dataset": dataset,
+  "--bucket_name": bucketName,
+
+  // Default logging (inherited from ETL config)
+  ...etlConfig.glue_defaults.logging_arguments,
+
+  // Job-specific logging overrides
+  "--continuous-log-logStreamPrefix": jobName,
+  "--spark-event-logs-path": `s3://${bucketName}/spark-logs/`
+}
+```
+
+**Where to Find Logs**:
+- **CloudWatch Logs**: `/aws-glue/jobs/logs-v2` log group
+- **Log Streams**: Named with job name prefix for easy filtering
+- **Spark UI**: Available during job execution for performance analysis
+- **Job Metrics**: Available in CloudWatch Metrics under `AWS/Glue`
+
+**Log Stream Naming Pattern**: `{jobName}/{run-id}/{execution-timestamp}`
 
 ### CDK Development Guidelines
 

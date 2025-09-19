@@ -16,7 +16,7 @@ from pyspark.sql.functions import lit, col, when, to_date, expr, split, lpad, su
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'bucket_name', 'dataset',
-    'source_url', 'bronze_database', 'raw_base_path', 'bronze_base_path', 
+    'source_url', 'bronze_database', 'raw_path', 'bronze_path',
     'date_format', 'compression_codec'
 ])
 
@@ -41,19 +41,19 @@ source_url = args['source_url']
 bronze_database = args['bronze_database']
 date_format = args['date_format']
 
-# Build paths from pre-computed base paths
-raw_base_path = args['raw_base_path']
-bronze_base_path = args['bronze_base_path']
+# Build full S3 paths from path fragments
+raw_path_fragment = args['raw_path']
+bronze_path_fragment = args['bronze_path']
 
-raw_path = f"{raw_base_path}run_id={run_id}/"
-bronze_products_path = f"{bronze_base_path}_products".rstrip('/')
-bronze_packages_path = f"{bronze_base_path}_packages".rstrip('/')
+raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
+bronze_products_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}_products"
+bronze_packages_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}_packages"
 
 print(f"Starting Complete CDER ETL for {dataset} (download + transform dual tables)")
 print(f"Source URL: {source_url}")
-print(f"Raw path: {raw_path}")
-print(f"Bronze products path: {bronze_products_path}")
-print(f"Bronze packages path: {bronze_packages_path}")
+print(f"Raw path: {raw_s3_path}")
+print(f"Bronze products path: {bronze_products_s3_path}")
+print(f"Bronze packages path: {bronze_packages_s3_path}")
 print(f"Run ID: {run_id}")
 print(f"Date format: {date_format}")
 print(f"Bronze database: {bronze_database}")
@@ -124,7 +124,7 @@ try:
     
     # Memory-efficient download and extraction using temporary file
     s3_client = boto3.client('s3')
-    zip_key = f"raw/{dataset}/run_id={run_id}/source.zip"
+    zip_key = f"{raw_path_fragment}run_id={run_id}/source.zip"
 
     import tempfile
     import shutil
@@ -171,7 +171,7 @@ try:
                                 raw_data = txt_file.read()
                                 decoded_data = raw_data.decode('iso-8859-1').encode('utf-8')
 
-                                txt_key = f"raw/{dataset}/run_id={run_id}/{file_info.filename}"
+                                txt_key = f"{raw_path_fragment}run_id={run_id}/{file_info.filename}"
 
                                 # Upload decoded text file to S3
                                 s3_client.put_object(
@@ -239,12 +239,12 @@ try:
     print(f"Products final columns: {df_products_bronze.columns}")
     
     # Write products to bronze layer
-    print(f"Writing products to: {bronze_products_path}")
-    
+    print(f"Writing products to: {bronze_products_s3_path}")
+
     df_products_bronze.write \
                      .mode("overwrite") \
                      .option("compression", args['compression_codec']) \
-                     .parquet(bronze_products_path)
+                     .parquet(bronze_products_s3_path)
     
     print(f"Successfully processed {products_row_count} product records to bronze layer")
     
@@ -287,12 +287,12 @@ try:
     print(f"Packages final columns: {df_packages_bronze.columns}")
     
     # Write packages to bronze layer
-    print(f"Writing packages to: {bronze_packages_path}")
-    
+    print(f"Writing packages to: {bronze_packages_s3_path}")
+
     df_packages_bronze.write \
                      .mode("overwrite") \
                      .option("compression", args['compression_codec']) \
-                     .parquet(bronze_packages_path)
+                     .parquet(bronze_packages_s3_path)
     
     print(f"Successfully processed {packages_row_count} package records to bronze layer")
     
