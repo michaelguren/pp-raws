@@ -1,9 +1,10 @@
 import sys
-import os
 import tempfile
 import zipfile
-import ftplib
+import urllib.request
+import shutil
 import boto3
+import time
 from datetime import datetime
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
@@ -20,7 +21,8 @@ args = getResolvedOptions(sys.argv, [
     'raw_base_path',
     'bronze_base_path',
     'compression_codec',
-    'bucket_name'
+    'bucket_name',
+    'source_url'
 ])
 
 # Initialize Spark and Glue contexts
@@ -40,15 +42,13 @@ raw_base_path = args['raw_base_path']
 bronze_base_path = args['bronze_base_path']
 compression_codec = args['compression_codec']
 bucket_name = args['bucket_name']
+source_url = args['source_url']
 
 # Generate run_id (human-readable timestamp)
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-# FTP and file configuration
-ftp_host = "public.nlm.nih.gov"
-ftp_path = "/nlmdata/.dailymed/rxnorm_mappings.zip"
-zip_filename = "rxnorm_mappings.zip"
-csv_filename = "rxnorm_mappings.txt"
+# File configuration
+txt_filename = "rxnorm_mappings.txt"
 
 # Column mappings from Rails model
 column_mappings = {
@@ -59,86 +59,68 @@ column_mappings = {
     "RXTTY": "rx_tty"
 }
 
-def download_ftp_file():
-    """Download the zip file from NLM FTP server"""
-    print(f"Connecting to FTP server: {ftp_host}")
+def download_and_process_file():
+    """Memory-efficient HTTPS download of pipe-delimited text file"""
+    print(f"Downloading from: {source_url}")
 
-    temp_dir = tempfile.mkdtemp()
-    local_zip_path = os.path.join(temp_dir, zip_filename)
+    s3_client = boto3.client('s3')
+    txt_key = f"raw/{dataset}/run_id={run_id}/{txt_filename}"
 
-    try:
-        # Connect to FTP server
-        ftp = ftplib.FTP(ftp_host)
-        ftp.login()  # Anonymous login
+    from urllib.error import URLError, HTTPError
 
-        print(f"Downloading {ftp_path} to {local_zip_path}")
-        with open(local_zip_path, 'wb') as f:
-            ftp.retrbinary(f'RETR {ftp_path}', f.write)
+    max_retries = 3
+    content_length = None
 
-        ftp.quit()
-        print(f"Successfully downloaded {zip_filename}")
-        return local_zip_path, temp_dir
+    for attempt in range(max_retries):
+        try:
+            print(f"Download attempt {attempt + 1}/{max_retries}")
 
-    except Exception as e:
-        print(f"FTP download failed: {str(e)}")
-        raise
+            # Stream download directly to S3
+            with urllib.request.urlopen(source_url, timeout=300) as response:
+                content_length = response.headers.get('Content-Length')
+                if content_length:
+                    print(f"File size: {int(content_length):,} bytes")
 
-def extract_and_upload_raw(local_zip_path, temp_dir):
-    """Extract CSV from zip and upload both raw files to S3"""
-    print(f"Extracting {csv_filename} from {local_zip_path}")
+                print(f"Content-Type: {response.headers.get('Content-Type', 'Unknown')}")
 
-    raw_csv_path = None
+                # Stream pipe-delimited text file directly to S3
+                s3_client.upload_fileobj(
+                    response,
+                    bucket_name,
+                    txt_key
+                )
+                print(f"Streamed text file to: s3://{bucket_name}/{txt_key}")
 
-    try:
-        with zipfile.ZipFile(local_zip_path, 'r') as zip_ref:
-            # Extract the specific file we need
-            if csv_filename in zip_ref.namelist():
-                zip_ref.extract(csv_filename, temp_dir)
-                raw_csv_path = os.path.join(temp_dir, csv_filename)
-                print(f"Extracted {csv_filename}")
+            print(f"Successfully downloaded and uploaded pipe-delimited file")
+            return  # Success, exit retry loop
+
+        except (URLError, HTTPError) as e:
+            print(f"Network error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff
+                print(f"Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
             else:
-                available_files = zip_ref.namelist()
-                print(f"Available files in zip: {available_files}")
-                raise FileNotFoundError(f"{csv_filename} not found in zip archive")
-
-        # Upload raw files to S3
-        s3_client = boto3.client('s3')
-        zip_key = f"raw/{dataset}/run_id={run_id}/{zip_filename}"
-        csv_key = f"raw/{dataset}/run_id={run_id}/{csv_filename}"
-
-        # Upload original zip
-        with open(local_zip_path, 'rb') as f:
-            s3_client.put_object(
-                Bucket=bucket_name,
-                Key=zip_key,
-                Body=f.read()
-            )
-
-        # Upload extracted CSV for lineage
-        with open(raw_csv_path, 'rb') as f:
-            s3_client.put_object(
-                Bucket=bucket_name,
-                Key=csv_key,
-                Body=f.read()
-            )
-
-        print(f"Uploaded raw files to S3: {zip_key}, {csv_key}")
-        return raw_csv_path
-
-    except Exception as e:
-        print(f"Error extracting/uploading raw files: {str(e)}")
-        raise
+                raise
+        except Exception as e:
+            print(f"Unexpected error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
+            else:
+                raise
 
 def process_csv_to_bronze():
-    """Read pipe-delimited CSV from S3 and transform to Bronze parquet"""
-    print(f"Processing CSV from S3 raw layer")
+    """Read pipe-delimited text file from S3 and transform to Bronze parquet"""
+    print(f"Processing pipe-delimited file from S3 raw layer")
 
     try:
-        # Read CSV from S3 raw path (uploaded by extract_and_upload_raw)
+        # Read text file from S3 raw path
         raw_s3_path = f"{raw_base_path}run_id={run_id}/"
-        csv_s3_path = f"{raw_s3_path}*.txt"  # Match the txt file extension
+        txt_s3_path = f"{raw_s3_path}{txt_filename}"
 
-        print(f"Reading CSV from: {csv_s3_path}")
+        print(f"Reading pipe-delimited file from: {txt_s3_path}")
 
         # Define schema based on Rails model
         schema = StructType([
@@ -155,13 +137,13 @@ def process_csv_to_bronze():
             .option("delimiter", "|") \
             .option("encoding", "UTF-8") \
             .schema(schema) \
-            .csv(csv_s3_path)
+            .csv(txt_s3_path)
 
         row_count = df.count()
-        print(f"Read {row_count} records from CSV")
+        print(f"Read {row_count} records from pipe-delimited file")
 
         if row_count == 0:
-            raise ValueError("No data found in CSV file")
+            raise ValueError("No data found in pipe-delimited file")
 
         # Apply column mappings and add metadata
         for old_col, new_col in column_mappings.items():
@@ -186,22 +168,13 @@ def process_csv_to_bronze():
         print(f"Successfully wrote {row_count} records to Bronze layer")
 
         # Note: Crawler will update the Glue catalog table after job completion
-        bronze_table_name = f"bronze_{dataset.replace('-', '_')}"
+        bronze_table_name = f"{dataset.replace('-', '_')}"
         print(f"Bronze table will be available as: {bronze_database}.{bronze_table_name}")
         return row_count
 
     except Exception as e:
-        print(f"Error processing CSV to Bronze: {str(e)}")
+        print(f"Error processing pipe-delimited file to Bronze: {str(e)}")
         raise
-
-def cleanup_temp_files(temp_dir):
-    """Clean up temporary files"""
-    try:
-        import shutil
-        shutil.rmtree(temp_dir)
-        print("Cleaned up temporary files")
-    except Exception as e:
-        print(f"Warning: Could not clean up temp files: {str(e)}")
 
 # Main execution
 def main():
@@ -209,27 +182,21 @@ def main():
     print(f"Dataset: {dataset}")
     print(f"Run ID: {run_id}")
 
-    temp_dir = None
     try:
-        # Download and extract
-        local_zip_path, temp_dir = download_ftp_file()
-        raw_csv_path = extract_and_upload_raw(local_zip_path, temp_dir)
+        # Download, extract, and upload with streaming
+        download_and_process_file()
 
         # Process to Bronze (reads from S3)
         record_count = process_csv_to_bronze()
 
         print(f"✅ ETL job completed successfully")
         print(f"   Records processed: {record_count}")
-        print(f"   Raw data: {raw_base_path}run_id={run_id}/")
+        print(f"   Raw data: {raw_base_path}run_id={run_id}/{txt_filename}")
         print(f"   Bronze data: {bronze_base_path}")
 
     except Exception as e:
         print(f"❌ ETL job failed: {str(e)}")
         raise
-
-    finally:
-        if temp_dir:
-            cleanup_temp_files(temp_dir)
 
 if __name__ == "__main__":
     main()

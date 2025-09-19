@@ -149,6 +149,7 @@ try:
 
                     # Stream to temp file in chunks (memory efficient)
                     shutil.copyfileobj(response, tmp_file)
+                    tmp_file.flush()
 
                 print(f"Downloaded to temporary file")
 

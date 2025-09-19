@@ -339,6 +339,7 @@ try:
                     for chunk in download_response.iter_content(chunk_size=8192):
                         if chunk:  # Filter out keep-alive chunks
                             tmp_file.write(chunk)
+                    tmp_file.flush()
 
                 print(f"Downloaded to temporary file")
 

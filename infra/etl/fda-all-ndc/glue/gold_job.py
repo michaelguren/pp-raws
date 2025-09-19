@@ -54,21 +54,21 @@ try:
     # Read NSDE data
     nsde_df = glueContext.create_dynamic_frame.from_catalog(
         database=bronze_database,
-        table_name="bronze_fda_nsde"
+        table_name="fda_nsde"
     ).toDF()
     print(f"NSDE records: {nsde_df.count()}")
 
     # Read CDER Products
     products_df = glueContext.create_dynamic_frame.from_catalog(
         database=bronze_database,
-        table_name="bronze_fda_cder_products"
+        table_name="fda_cder_products"
     ).toDF()
     print(f"CDER Products records: {products_df.count()}")
 
     # Read CDER Packages
     packages_df = glueContext.create_dynamic_frame.from_catalog(
         database=bronze_database,
-        table_name="bronze_fda_cder_packages"
+        table_name="fda_cder_packages"
     ).toDF()
     print(f"CDER Packages records: {packages_df.count()}")
 
@@ -187,7 +187,7 @@ try:
     gold_dynamic_frame = DynamicFrame.fromDF(
         gold_df,
         glueContext,
-        "gold_fda_all_ndc"
+        dataset
     )
 
     # Write to S3 (kill-and-fill)
@@ -196,7 +196,7 @@ try:
         connection_type="s3",
         connection_options={"path": gold_path},
         format="parquet",
-        transformation_ctx="write_gold_fda_all_ndc"
+        transformation_ctx=f"write_{dataset}"
     )
 
     print("GOLD data written successfully")

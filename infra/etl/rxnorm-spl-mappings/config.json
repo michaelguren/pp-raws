@@ -1,6 +1,6 @@
 {
   "dataset": "rxnorm-spl-mappings",
-  "source_url": "ftp://public.nlm.nih.gov/nlmdata/.dailymed/rxnorm_mappings.zip",
+  "source_url": "https://dailymed-data.nlm.nih.gov/public-release-files/rxnorm_mappings.zip",
   "description": "RxNORM to SPL SET ID mappings from DailyMed",
   "data_size_category": "small",
   "schedule": {

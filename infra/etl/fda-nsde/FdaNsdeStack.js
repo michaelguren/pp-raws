@@ -36,7 +36,7 @@ class FdaNsdeStack extends cdk.Stack {
     
     // Pre-compute simple S3 base paths for Glue jobs  
     const rawBasePath = `s3://${bucketName}/raw/${dataset}/`;
-    const bronzeBasePath = `s3://${bucketName}/bronze/bronze_${dataset}/`;
+    const bronzeBasePath = `s3://${bucketName}/bronze/${dataset}/`;
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {

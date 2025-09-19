@@ -52,9 +52,9 @@ def process_rxcui_changes():
 
         # Check if tables exist before reading
         tables_to_check = [
-            f"{bronze_database}.bronze_rxnorm_rxnatomarchive",
-            f"{bronze_database}.bronze_rxnorm_rxnconso",
-            f"{bronze_database}.bronze_rxnorm_rxnrel"
+            f"{bronze_database}.{dataset}_rxnatomarchive",
+            f"{bronze_database}.{dataset}_rxnconso",
+            f"{bronze_database}.{dataset}_rxnrel"
         ]
 
         for table_name in tables_to_check:
@@ -66,9 +66,9 @@ def process_rxcui_changes():
                 raise Exception(f"Required table {table_name} not found. Run bronze job first.")
 
         # Read tables
-        rxnatomarchive_df = spark.table(f"{bronze_database}.bronze_rxnorm_rxnatomarchive")
-        rxnconso_df = spark.table(f"{bronze_database}.bronze_rxnorm_rxnconso")
-        rxnrel_df = spark.table(f"{bronze_database}.bronze_rxnorm_rxnrel")
+        rxnatomarchive_df = spark.table(f"{bronze_database}.{dataset}_rxnatomarchive")
+        rxnconso_df = spark.table(f"{bronze_database}.{dataset}_rxnconso")
+        rxnrel_df = spark.table(f"{bronze_database}.{dataset}_rxnrel")
 
         print(f"RXNATOMARCHIVE records: {rxnatomarchive_df.count()}")
         print(f"RXNCONSO records: {rxnconso_df.count()}")
@@ -162,7 +162,7 @@ def process_rxcui_changes():
             rxcui_changes_df.show(10, truncate=False)
 
         # 4. Write to GOLD layer
-        gold_path = f"s3://{bucket_name}/gold/gold_rxcui_changes/"
+        gold_path = f"s3://{bucket_name}/gold/rxcui_changes/"
         print(f"Writing RxCUI changes to: {gold_path}")
 
         # Convert to DynamicFrame for writing
@@ -170,7 +170,7 @@ def process_rxcui_changes():
         changes_dynamic_frame = DynamicFrame.fromDF(
             rxcui_changes_df,
             glueContext,
-            "gold_rxcui_changes"
+            "rxcui_changes"
         )
 
         # Write to S3 (kill-and-fill)
@@ -179,7 +179,7 @@ def process_rxcui_changes():
             connection_type="s3",
             connection_options={"path": gold_path},
             format="parquet",
-            transformation_ctx="write_gold_rxcui_changes"
+            transformation_ctx="write_rxcui_changes"
         )
 
         print(f"Successfully wrote {total_changes} RxCUI changes to gold layer")

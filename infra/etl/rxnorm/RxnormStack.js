@@ -66,7 +66,7 @@ class RxnormStack extends cdk.Stack {
 
     // Build S3 paths from warehouse config patterns
     const rawBasePath = `s3://${bucketName}/raw/${dataset}/`;
-    const bronzeBasePath = `s3://${bucketName}/bronze/bronze_${dataset}`;
+    const bronzeBasePath = `s3://${bucketName}/bronze/${dataset}`;
     const goldBasePath = `s3://${bucketName}/gold/`;
 
     // Deploy Glue scripts to S3

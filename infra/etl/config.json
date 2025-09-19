@@ -6,9 +6,9 @@
   "bucket_name_pattern": "pp-dw-{account}",
   "path_patterns": {
     "raw": "raw/{dataset}/run_id={run_id}/",
-    "bronze": "bronze/bronze_{dataset}/",
-    "silver": "silver/silver_{dataset}/",
-    "gold": "gold/gold_{dataset}/",
+    "bronze": "bronze/{dataset}/",
+    "silver": "silver/{dataset}/",
+    "gold": "gold/{dataset}/",
     "bronze_script": "etl/{dataset}/glue/bronze_job.py",
     "silver_script": "etl/{dataset}/glue/silver_job.py",
     "gold_script": "etl/{dataset}/glue/gold_job.py"

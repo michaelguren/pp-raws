@@ -62,6 +62,7 @@ class RxnormSplMappingsStack extends cdk.Stack {
         "--bronze_base_path": bronzeBasePath,
         "--compression_codec": "zstd",
         "--bucket_name": bucketName,
+        "--source_url": datasetConfig.source_url,
         "--enable-continuous-cloudwatch-log": "true",
         "--enable-spark-ui": "true",
         "--spark-event-logs-path": `s3://${bucketName}/spark-logs/`,

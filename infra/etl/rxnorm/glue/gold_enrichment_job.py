@@ -67,8 +67,8 @@ def create_rxnorm_ndc_mapping():
 
         # Check if tables exist
         tables_to_check = [
-            f"{bronze_database}.bronze_rxnorm_rxnsat",
-            f"{bronze_database}.bronze_rxnorm_rxnconso"
+            f"{bronze_database}.{dataset}_rxnsat",
+            f"{bronze_database}.{dataset}_rxnconso"
         ]
 
         for table_name in tables_to_check:
@@ -80,8 +80,8 @@ def create_rxnorm_ndc_mapping():
                 raise Exception(f"Required table {table_name} not found. Run bronze job first.")
 
         # Read tables
-        rxnsat_df = spark.table(f"{bronze_database}.bronze_rxnorm_rxnsat")
-        rxnconso_df = spark.table(f"{bronze_database}.bronze_rxnorm_rxnconso")
+        rxnsat_df = spark.table(f"{bronze_database}.{dataset}_rxnsat")
+        rxnconso_df = spark.table(f"{bronze_database}.{dataset}_rxnconso")
 
         print(f"RXNSAT records: {rxnsat_df.count()}")
         print(f"RXNCONSO records: {rxnconso_df.count()}")
@@ -89,7 +89,7 @@ def create_rxnorm_ndc_mapping():
         # Try to read RxCUI changes (optional)
         rxcui_changes_df = None
         try:
-            rxcui_changes_df = spark.table(f"{gold_database}.gold_rxcui_changes")
+            rxcui_changes_df = spark.table(f"{gold_database}.rxcui_changes")
             print(f"RxCUI changes records: {rxcui_changes_df.count()}")
         except Exception as e:
             print(f"RxCUI changes table not found: {e}")
@@ -250,7 +250,7 @@ def create_rxnorm_ndc_mapping():
             final_mapping_with_meta.groupBy("tty").count().show()
 
         # 6. Write to GOLD layer
-        gold_path = f"s3://{bucket_name}/gold/gold_rxnorm_ndc_mapping/"
+        gold_path = f"s3://{bucket_name}/gold/rxnorm_ndc_mapping/"
         print(f"Writing NDC mapping to: {gold_path}")
 
         # Convert to DynamicFrame for writing
@@ -258,7 +258,7 @@ def create_rxnorm_ndc_mapping():
         mapping_dynamic_frame = DynamicFrame.fromDF(
             final_mapping_with_meta,
             glueContext,
-            "gold_rxnorm_ndc_mapping"
+            "rxnorm_ndc_mapping"
         )
 
         # Write to S3 (kill-and-fill)
@@ -267,7 +267,7 @@ def create_rxnorm_ndc_mapping():
             connection_type="s3",
             connection_options={"path": gold_path},
             format="parquet",
-            transformation_ctx="write_gold_rxnorm_ndc_mapping"
+            transformation_ctx="write_rxnorm_ndc_mapping"
         )
 
         print(f"Successfully wrote {final_count} NDC mappings to gold layer")

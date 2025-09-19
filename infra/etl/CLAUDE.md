@@ -23,8 +23,8 @@ All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
 - `pp_dw_bronze` (shared across all datasets)
 
 **Tables:**
-- `bronze_{dataset}` for single-table datasets (e.g., `bronze_fda_nsde`)
-- `bronze_{dataset}_{table_type}` for multi-table datasets (e.g., `bronze_fda_cder_products`, `bronze_fda_cder_packages`)
+- `{dataset}` for single-table datasets (e.g., `fda_nsde`)
+- `{dataset}_{table_type}` for multi-table datasets (e.g., `fda_cder_products`, `fda_cder_packages`, `rxnorm_rxnconso`, `rxnorm_rxnsat`)
 
 ### Data Storage Strategy
 - **Raw data**: Partitioned by `run_id` for lineage tracking
@@ -79,7 +79,7 @@ datasetGlueRole.addToPolicy(secretsPolicy); // Only this dataset gets secrets ac
 s3://pp-dw-{account}/
 ├── etl/{dataset}/glue/                                # Deployed Glue job scripts
 ├── raw/{dataset}/run_id={run_id}/                     # Original source files
-├── bronze/bronze_{dataset}/                           # Cleaned parquet, kill-and-fill
+├── bronze/{dataset}/                                  # Cleaned parquet, kill-and-fill
 └── silver/{dataset}/                                  # (Future) Business logic and analytics
 ```
 
