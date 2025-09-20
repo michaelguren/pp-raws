@@ -17,7 +17,7 @@ from pyspark.sql.functions import lit, col, when, to_date, expr, split, lpad, su
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'bucket_name', 'dataset',
     'source_url', 'bronze_database', 'raw_path', 'bronze_path',
-    'date_format', 'compression_codec'
+    'date_format', 'compression_codec', 'file_table_mapping'
 ])
 
 # Initialize Glue
@@ -29,6 +29,7 @@ job.init(args['JOB_NAME'], args)
 
 # Configure Spark
 spark.conf.set("spark.sql.parquet.compression.codec", args['compression_codec'])
+spark.conf.set("spark.sql.parquet.summary.metadata.level", "ALL")
 
 # Generate human-readable runtime run_id
 from datetime import datetime
@@ -41,13 +42,17 @@ source_url = args['source_url']
 bronze_database = args['bronze_database']
 date_format = args['date_format']
 
+# Parse file-to-table mapping
+import json
+file_table_mapping = json.loads(args['file_table_mapping'])
+
 # Build full S3 paths from path fragments
 raw_path_fragment = args['raw_path']
 bronze_path_fragment = args['bronze_path']
 
 raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
-bronze_products_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}_products"
-bronze_packages_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}_packages"
+bronze_products_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}products/"
+bronze_packages_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}packages/"
 
 print(f"Starting Complete CDER ETL for {dataset} (download + transform dual tables)")
 print(f"Source URL: {source_url}")
@@ -197,12 +202,16 @@ try:
             print(f"Unexpected error: {e}")
             raise
     
-    if 'product.txt' not in txt_files or 'package.txt' not in txt_files:
-        raise ValueError(f"Required files not found. Available files: {list(txt_files.keys())}")
-    
+    # Verify all expected files are present
+    expected_files = set(file_table_mapping.keys())
+    found_files = set(txt_files.keys())
+    if not expected_files.issubset(found_files):
+        missing = expected_files - found_files
+        raise ValueError(f"Required files not found. Missing: {missing}, Available: {list(found_files)}")
+
     # Step 2: Process Products Table
     print("Processing products table...")
-    
+
     products_s3_path = f"s3://{bucket_name}/{txt_files['product.txt']}"
     print(f"Reading products from: {products_s3_path}")
     

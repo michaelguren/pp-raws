@@ -27,6 +27,7 @@ job.init(args['JOB_NAME'], args)
 
 # Configure Spark
 spark.conf.set("spark.sql.parquet.compression.codec", args['compression_codec'])
+spark.conf.set("spark.sql.parquet.summary.metadata.level", "ALL")
 
 # Generate human-readable runtime run_id
 from datetime import datetime
@@ -200,17 +201,7 @@ try:
     )
 
     print("GOLD data written successfully")
-
-    # Step 5: Update catalog via crawler
-    print(f"Starting crawler: {crawler_name}")
-    glue_client = boto3.client('glue')
-
-    try:
-        response = glue_client.start_crawler(Name=crawler_name)
-        print(f"Crawler started successfully: {response}")
-    except Exception as crawler_error:
-        print(f"Warning: Could not start crawler {crawler_name}: {crawler_error}")
-        print("Manual catalog update may be required")
+    print(f"Note: Run crawler manually via console if schema changes are needed: {crawler_name}")
 
     print("GOLD ETL completed successfully")
 

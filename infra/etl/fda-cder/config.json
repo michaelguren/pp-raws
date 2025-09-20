@@ -4,23 +4,12 @@
   "description": "FDA CDER National Drug Code Directory with Products and Packages",
   "data_size_category": "medium",
   "date_format": "MM/dd/yyyy",
-  "business_keys": {
-    "products": "product_id",
-    "packages": "ndc_package_code"
-  },
   "schedule": {
     "enabled": false,
     "expression": "cron(0 6 * * ? *)"
   },
-  "data_quality": {
-    "critical_null_threshold": 0.1,
-    "required_columns": {
-      "products": ["product_id", "product_ndc"],
-      "packages": ["product_id", "ndc_package_code"]
-    }
-  },
-  "tables": {
-    "products": "fda_cder_products",
-    "packages": "fda_cder_packages"
+  "file_table_mapping": {
+    "product.txt": "products",
+    "package.txt": "packages"
   }
 }

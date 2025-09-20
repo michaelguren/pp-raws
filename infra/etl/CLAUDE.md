@@ -51,10 +51,25 @@ EventBridge → Glue Job → S3 (Raw + Bronze) → Crawler → Athena
 ```
 s3://pp-dw-{account}/
 ├── raw/{dataset}/run_id={timestamp}/     # Original source files
-├── bronze/{dataset}/                     # Cleaned parquet files
+├── bronze/{dataset}/                     # Single-table datasets
+├── bronze/{dataset}/{table_name}/        # Multi-table datasets
 ├── gold/{dataset}/                       # Business logic transformations
 └── etl/{dataset}/glue/                   # Deployed job scripts
 ```
+
+**Multi-File Dataset Conventions:**
+For datasets containing multiple files (e.g., zip with product.txt + package.txt):
+- **Bronze paths**: `bronze/{dataset}/{table_name}/` (e.g., `bronze/fda-cder/products/`)
+- **Table names**: `{dataset}_{table_name}` (e.g., `fda_cder_products`)
+- **Crawler names**: `{prefix}-bronze-{dataset}-{table_name}-crawler`
+- **Path computation**: Use `${bronzePath}{table_name}/` pattern for DRY implementation
+- **Config structure**: Use `file_table_mapping` to map source files to table names:
+  ```json
+  "file_table_mapping": {
+    "product.txt": "products",
+    "package.txt": "packages"
+  }
+  ```
 
 **Glue Script Conventions:**
 - Bronze: `etl/{dataset}/glue/bronze_job.py`
@@ -62,15 +77,54 @@ s3://pp-dw-{account}/
 
 ## Stack Implementation Patterns
 
+**EtlConfig Class:**
+Use the centralized `EtlConfig.js` class for all configuration and helper methods:
+
+```javascript
+const etlConfig = require("../EtlConfig");
+const datasetConfig = require("./config.json");
+
+// Get all computed values from EtlConfig methods
+const databases = etlConfig.getDatabaseNames();
+const resourceNames = etlConfig.getResourceNames(dataset);
+const paths = etlConfig.getS3Paths(bucketName, dataset);
+const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
+```
+
+**EtlConfig Methods:**
+- `getDatabaseNames()` - returns `{bronze, gold}` database names
+- `getResourceNames(dataset, options)` - generates job/crawler names
+- `getS3Paths(bucketName, dataset, options)` - returns all standard S3 URLs
+- `getWorkerConfig(sizeCategory)` - validates and returns worker configuration
+- `getGlueJobArguments(options)` - builds complete job arguments for bronze/gold layers
+
 **Path Computation (Convention-based):**
 ```javascript
-// Computed in stack files, not config
-const rawPath = `raw/${dataset}/`;
-const bronzePath = `bronze/${dataset}/`;
-const scriptLocation = `s3://${bucketName}/etl/${dataset}/glue/bronze_job.py`;
+const path = require("path");
+
+// ✅ Helper function returns complete S3 URLs
+const s3Path = (bucket, ...segments) => `s3://${bucket}/` + path.posix.join(...segments) + "/";
+
+// Computed in stack files, not config - complete S3 URLs
+const rawPath = s3Path(bucketName, "raw", dataset);        // "s3://bucket/raw/dataset/"
+const bronzePath = s3Path(bucketName, "bronze", dataset);  // "s3://bucket/bronze/dataset/"
+const scriptLocation = `s3://${bucketName}/` + path.posix.join("etl", dataset, "glue", "bronze_job.py");
 
 // Database names computed from prefix
 const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
+```
+
+**Python - No Path Construction Needed:**
+```python
+import posixpath
+
+# ✅ Stack passes complete S3 URLs - no construction needed!
+raw_base_path = args['raw_path']      # "s3://bucket/raw/dataset/"
+bronze_s3_path = args['bronze_path']  # "s3://bucket/bronze/dataset/"
+
+# ✅ When appending segments to S3 URLs, use posixpath
+scheme, path = raw_base_path.rstrip('/').split('://', 1)
+raw_s3_path = f"{scheme}://{posixpath.join(path, f'run_id={run_id}')}/"
 ```
 
 **IAM Role Strategy:**

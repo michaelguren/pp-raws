@@ -15,7 +15,7 @@ from pyspark.sql.functions import lit, col, when, to_date  # type: ignore[import
 
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
-    'JOB_NAME', 'bucket_name', 'dataset',
+    'JOB_NAME', 'dataset',
     'source_url', 'bronze_database', 'raw_path', 'bronze_path',
     'date_format', 'compression_codec'
 ])
@@ -36,18 +36,20 @@ from datetime import datetime
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")  # Format: 20240311_143022
 
 # Get configuration from job arguments
-bucket_name = args['bucket_name']
 dataset = args['dataset']
 source_url = args['source_url']
 bronze_database = args['bronze_database']
 date_format = args['date_format']
 
-# Build full S3 paths from path fragments
-raw_path_fragment = args['raw_path']
-bronze_path_fragment = args['bronze_path']
+# Use complete S3 URLs from stack (no path construction needed!)
+import posixpath
 
-raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
-bronze_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}"
+raw_base_path = args['raw_path']
+bronze_s3_path = args['bronze_path']
+
+# Add run_id to raw path using posixpath
+scheme, path = raw_base_path.rstrip('/').split('://', 1)
+raw_s3_path = f"{scheme}://{posixpath.join(path, f'run_id={run_id}')}/"
 
 print(f"Starting Complete ETL for {dataset} (download + transform)")
 print(f"Source URL: {source_url}")
@@ -86,7 +88,12 @@ try:
     print(f"Downloading from: {source_url}")
 
     s3_client = boto3.client('s3')
-    zip_key = f"{raw_path_fragment}run_id={run_id}/source.zip"
+
+    # Extract bucket and key from complete S3 URL
+    import re
+    bucket_name = re.match(r's3://([^/]+)/', raw_base_path).group(1)
+    raw_key_prefix = raw_base_path.replace(f's3://{bucket_name}/', '')
+    zip_key = f"{raw_key_prefix}run_id={run_id}/source.zip"
 
     import tempfile
     import shutil
@@ -128,7 +135,7 @@ try:
                         if not file_info.is_dir() and file_info.filename.lower().endswith('.csv'):
                             # Stream each CSV file from zip to S3
                             with zip_ref.open(file_info) as csv_file:
-                                csv_key = f"{raw_path_fragment}run_id={run_id}/{file_info.filename}"
+                                csv_key = f"{raw_key_prefix}run_id={run_id}/{file_info.filename}"
 
                                 s3_client.upload_fileobj(
                                     csv_file,

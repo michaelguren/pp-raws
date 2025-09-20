@@ -33,13 +33,14 @@ class FdaCderStack extends cdk.Stack {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
 
-    // S3 paths using convention
-    const bronzeProductsPath = `bronze/${dataset}_products/`;
-    const bronzePackagesPath = `bronze/${dataset}_packages/`;
-
     // S3 path fragments using convention
     const rawPath = `raw/${dataset}/`;
     const bronzePath = `bronze/${dataset}/`;
+
+    // Get table names from config and build paths using convention
+    const tableNames = Object.values(datasetConfig.file_table_mapping);
+    const bronzeProductsPath = `${bronzePath}products/`;
+    const bronzePackagesPath = `${bronzePath}packages/`;
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
@@ -71,6 +72,7 @@ class FdaCderStack extends cdk.Stack {
         "--date_format": datasetConfig.date_format,
         "--compression_codec": "zstd",
         "--bucket_name": bucketName,
+        "--file_table_mapping": JSON.stringify(datasetConfig.file_table_mapping),
         // Default arguments (from ETL config)
         ...etlConfig.glue_defaults.default_arguments,
       },

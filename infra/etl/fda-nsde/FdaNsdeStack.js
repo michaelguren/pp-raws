@@ -11,38 +11,22 @@ class FdaNsdeStack extends cdk.Stack {
     const { dataWarehouseBucket, glueRole } = props.etlCoreStack;
     const bucketName = dataWarehouseBucket.bucketName;
 
-    // Load warehouse and dataset configurations
-    const etlConfig = require("../config.json");
+    // Load configurations
+    const etlConfig = require("../EtlConfig");
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
 
-    // Compute database names from prefix
-    const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
-    
-    // Construct resource names from warehouse conventions
-    const resourceNames = {
-      bronzeJob: `${etlConfig.etl_resource_prefix}-bronze-${dataset}`,
-      bronzeCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-crawler`
-    };
-
-
-    // Get worker config based on dataset size category
-    const sizeCategory = datasetConfig.data_size_category || 'medium';
-    const workerConfig = etlConfig.glue_worker_configs[sizeCategory];
-    
-    if (!workerConfig) {
-      throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
-    }
-
-    // S3 path fragments using convention
-    const rawPath = `raw/${dataset}/`;
-    const bronzePath = `bronze/${dataset}/`;
+    // Get everything from EtlConfig methods
+    const databases = etlConfig.getDatabaseNames();
+    const resourceNames = etlConfig.getResourceNames(dataset);
+    const paths = etlConfig.getS3Paths(bucketName, dataset);
+    const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
       sources: [s3deploy.Source.asset(path.join(__dirname, "glue"))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `etl/${dataset}/glue/`,
+      destinationKeyPrefix: path.posix.join("etl", dataset, "glue") + "/",
     });
 
     // Bronze Glue job
@@ -51,7 +35,7 @@ class FdaNsdeStack extends cdk.Stack {
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${bucketName}/etl/${dataset}/glue/bronze_job.py`,
+        scriptLocation: paths.scriptLocation.bronze,
         pythonVersion: etlConfig.glue_defaults.python_version,
       },
       glueVersion: etlConfig.glue_defaults.version,
@@ -59,18 +43,12 @@ class FdaNsdeStack extends cdk.Stack {
       numberOfWorkers: workerConfig.number_of_workers,
       maxRetries: etlConfig.glue_defaults.max_retries,
       timeout: etlConfig.glue_defaults.timeout_minutes,
-      defaultArguments: {
-        "--dataset": dataset,
-        "--source_url": datasetConfig.source_url,
-        "--bronze_database": bronzeDatabase,
-        "--raw_path": rawPath,
-        "--bronze_path": bronzePath,
-        "--date_format": datasetConfig.date_format,
-        "--compression_codec": "zstd",
-        "--bucket_name": bucketName,
-        // Default arguments (from ETL config)
-        ...etlConfig.glue_defaults.default_arguments,
-      },
+      defaultArguments: etlConfig.getGlueJobArguments({
+        dataset,
+        bucketName,
+        datasetConfig,
+        layer: 'bronze'
+      }),
     });
 
 
@@ -78,11 +56,11 @@ class FdaNsdeStack extends cdk.Stack {
     new glue.CfnCrawler(this, "BronzeCrawler", {
       name: resourceNames.bronzeCrawler,
       role: glueRole.roleArn,
-      databaseName: bronzeDatabase,
+      databaseName: databases.bronze,
       targets: {
         s3Targets: [
           {
-            path: `s3://${bucketName}/${bronzePath}`
+            path: paths.bronze
           }
         ]
       },
