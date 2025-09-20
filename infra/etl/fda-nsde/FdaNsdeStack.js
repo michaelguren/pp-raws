@@ -15,11 +15,14 @@ class FdaNsdeStack extends cdk.Stack {
     const etlConfig = require("../config.json");
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
+
+    // Compute database names from prefix
+    const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
     
     // Construct resource names from warehouse conventions
     const resourceNames = {
-      bronzeJob: `${etlConfig.warehouse_prefix}-bronze-${dataset}`,
-      bronzeCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-crawler`
+      bronzeJob: `${etlConfig.etl_resource_prefix}-bronze-${dataset}`,
+      bronzeCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-crawler`
     };
 
 
@@ -31,9 +34,9 @@ class FdaNsdeStack extends cdk.Stack {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
 
-    // S3 path fragments from warehouse config patterns
-    const rawPath = etlConfig.path_patterns.raw.replace('{dataset}', dataset).replace('run_id={run_id}/', '');
-    const bronzePath = etlConfig.path_patterns.bronze.replace('{dataset}', dataset);
+    // S3 path fragments using convention
+    const rawPath = `raw/${dataset}/`;
+    const bronzePath = `bronze/${dataset}/`;
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
@@ -48,7 +51,7 @@ class FdaNsdeStack extends cdk.Stack {
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${bucketName}/${etlConfig.path_patterns.bronze_script.replace('{dataset}', dataset)}`,
+        scriptLocation: `s3://${bucketName}/etl/${dataset}/glue/bronze_job.py`,
         pythonVersion: etlConfig.glue_defaults.python_version,
       },
       glueVersion: etlConfig.glue_defaults.version,
@@ -59,7 +62,7 @@ class FdaNsdeStack extends cdk.Stack {
       defaultArguments: {
         "--dataset": dataset,
         "--source_url": datasetConfig.source_url,
-        "--bronze_database": etlConfig.bronze_database,
+        "--bronze_database": bronzeDatabase,
         "--raw_path": rawPath,
         "--bronze_path": bronzePath,
         "--date_format": datasetConfig.date_format,
@@ -75,7 +78,7 @@ class FdaNsdeStack extends cdk.Stack {
     new glue.CfnCrawler(this, "BronzeCrawler", {
       name: resourceNames.bronzeCrawler,
       role: glueRole.roleArn,
-      databaseName: etlConfig.bronze_database,
+      databaseName: bronzeDatabase,
       targets: {
         s3Targets: [
           {

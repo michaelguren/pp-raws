@@ -9,10 +9,16 @@ class EtlCoreStack extends cdk.Stack {
 
     // Load warehouse configuration
     const warehouseConfig = require("./config.json");
-    
+
+    // Compute database names from prefix
+    const bronzeDbName = `${warehouseConfig.database_prefix}_bronze`;
+    const silverDbName = `${warehouseConfig.database_prefix}_silver`;
+    const goldDbName = `${warehouseConfig.database_prefix}_gold`;
+
     // Single data warehouse bucket with prefix-based organization
+    const bucketName = `${warehouseConfig.etl_resource_prefix}-${this.account}`;
     const dataWarehouseBucket = new s3.Bucket(this, "DataWarehouseBucket", {
-      bucketName: warehouseConfig.bucket_name_pattern.replace('{account}', this.account),
+      bucketName: bucketName,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
@@ -42,7 +48,7 @@ class EtlCoreStack extends cdk.Stack {
     const bronzeDatabase = new glue.CfnDatabase(this, "BronzeDatabase", {
       catalogId: this.account,
       databaseInput: {
-        name: warehouseConfig.bronze_database,
+        name: bronzeDbName,
         description: "Bronze layer database for all datasets"
       }
     });
@@ -51,8 +57,17 @@ class EtlCoreStack extends cdk.Stack {
     const silverDatabase = new glue.CfnDatabase(this, "SilverDatabase", {
       catalogId: this.account,
       databaseInput: {
-        name: warehouseConfig.silver_database,
+        name: silverDbName,
         description: "Silver layer database for all datasets"
+      }
+    });
+
+    // Glue gold database for Athena queries (shared across all datasets)
+    const goldDatabase = new glue.CfnDatabase(this, "GoldDatabase", {
+      catalogId: this.account,
+      databaseInput: {
+        name: goldDbName,
+        description: "Gold layer database for all datasets"
       }
     });
 
@@ -61,6 +76,7 @@ class EtlCoreStack extends cdk.Stack {
     this.glueRole = glueRole;
     this.bronzeDatabase = bronzeDatabase;
     this.silverDatabase = silverDatabase;
+    this.goldDatabase = goldDatabase;
     this.warehouseConfig = warehouseConfig;
 
     // Outputs for cross-stack references

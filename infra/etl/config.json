@@ -1,23 +1,18 @@
 {
-  "warehouse_prefix": "pp-dw",
-  "bronze_database": "pp_dw_bronze",
-  "silver_database": "pp_dw_silver", 
-  "gold_database": "pp_dw_gold",
-  "bucket_name_pattern": "pp-dw-{account}",
-  "path_patterns": {
-    "raw": "raw/{dataset}/run_id={run_id}/",
-    "bronze": "bronze/{dataset}/",
-    "silver": "silver/{dataset}/",
-    "gold": "gold/{dataset}/",
-    "bronze_script": "etl/{dataset}/glue/bronze_job.py",
-    "silver_script": "etl/{dataset}/glue/silver_job.py",
-    "gold_script": "etl/{dataset}/glue/gold_job.py"
-  },
+  "etl_resource_prefix": "pp-dw",
+  "database_prefix": "pp_dw",
   "glue_defaults": {
     "version": "4.0",
     "python_version": "3",
     "timeout_minutes": 30,
-    "max_retries": 1
+    "max_retries": 1,
+    "logging_arguments": {
+      "--enable-metrics": "true",
+      "--enable-continuous-cloudwatch-log": "true",
+      "--enable-continuous-log-filter": "true",
+      "--continuous-log-logGroup": "/aws-glue/jobs/logs-v2",
+      "--enable-spark-ui": "true"
+    }
   },
   "glue_worker_configs": {
     "small": {

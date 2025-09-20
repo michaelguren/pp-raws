@@ -16,10 +16,12 @@ class RxnormSplMappingsStack extends cdk.Stack {
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
 
+    // Compute database names from prefix
+    const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
     // Construct resource names from warehouse conventions
     const resourceNames = {
-      bronzeJob: `${etlConfig.warehouse_prefix}-bronze-${dataset}`,
-      bronzeCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-crawler`,
+      bronzeJob: `${etlConfig.etl_resource_prefix}-bronze-${dataset}`,
+      bronzeCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-crawler`,
     };
 
     // Get worker config based on dataset size category
@@ -30,9 +32,9 @@ class RxnormSplMappingsStack extends cdk.Stack {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
 
-    // S3 path fragments from warehouse config patterns
-    const rawPath = etlConfig.path_patterns.raw.replace('{dataset}', dataset).replace('run_id={run_id}/', '');
-    const bronzePath = `bronze/bronze_${dataset.replace('-', '_')}/`;
+    // S3 path fragments using convention
+    const rawPath = `raw/${dataset}/`;
+    const bronzePath = `bronze/${dataset}/`;
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
@@ -47,7 +49,7 @@ class RxnormSplMappingsStack extends cdk.Stack {
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${bucketName}/${etlConfig.path_patterns.bronze_script.replace('{dataset}', dataset)}`,
+        scriptLocation: `s3://${bucketName}/etl/${dataset}/glue/bronze_job.py`,
         pythonVersion: etlConfig.glue_defaults.python_version,
       },
       glueVersion: etlConfig.glue_defaults.version,
@@ -57,7 +59,7 @@ class RxnormSplMappingsStack extends cdk.Stack {
       timeout: etlConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
-        "--bronze_database": etlConfig.bronze_database,
+        "--bronze_database": bronzeDatabase,
         "--raw_path": rawPath,
         "--bronze_path": bronzePath,
         "--compression_codec": "zstd",
@@ -74,7 +76,7 @@ class RxnormSplMappingsStack extends cdk.Stack {
     const bronzeCrawler = new glue.CfnCrawler(this, "BronzeCrawler", {
       name: resourceNames.bronzeCrawler,
       role: glueRole.roleArn,
-      databaseName: etlConfig.bronze_database,
+      databaseName: bronzeDatabase,
       targets: {
         s3Targets: [
           {
@@ -122,7 +124,7 @@ class RxnormSplMappingsStack extends cdk.Stack {
       value: JSON.stringify([
         `1. Run Glue job: ${resourceNames.bronzeJob}`,
         `2. Run crawler: ${resourceNames.bronzeCrawler}`,
-        `3. Query table: ${etlConfig.bronze_database}.bronze_${dataset.replace('-', '_')}`
+        `3. Query table: ${bronzeDatabase}.bronze_${dataset.replace('-', '_')}`
       ]),
       description: "Execution steps for RxNORM SPL Mappings ETL"
     });

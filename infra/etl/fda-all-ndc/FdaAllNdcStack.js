@@ -14,14 +14,18 @@ class FdaAllNdcStack extends cdk.Stack {
     // Load warehouse and dataset configurations
     const etlConfig = require("../config.json");
     const datasetConfig = require("./config.json");
+
+    // Compute database names from prefix
+    const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
+    const goldDatabase = `${etlConfig.database_prefix}_gold`;
     const dataset = datasetConfig.dataset;
 
     // Get worker configuration based on data size category
     const workerConfig = etlConfig.glue_worker_configs[datasetConfig.data_size_category];
 
-    // Build paths using config patterns - GOLD layer paths
-    const goldBasePath = `s3://${bucketName}/${etlConfig.path_patterns.gold.replace('{dataset}', datasetConfig.dataset)}`;
-    const goldScriptPath = `s3://${bucketName}/${etlConfig.path_patterns.gold_script?.replace('{dataset}', datasetConfig.dataset) || `etl/${datasetConfig.dataset}/glue/gold_job.py`}`;
+    // Build paths using convention - GOLD layer paths
+    const goldBasePath = `s3://${bucketName}/gold/${datasetConfig.dataset}/`;
+    const goldScriptPath = `s3://${bucketName}/etl/${datasetConfig.dataset}/glue/gold_job.py`;
 
 
     // Deploy Glue script to S3
@@ -34,7 +38,7 @@ class FdaAllNdcStack extends cdk.Stack {
 
     // Create GOLD Glue Job
     const goldJob = new glue.CfnJob(this, 'GoldJob', {
-      name: `${etlConfig.warehouse_prefix}-gold-${datasetConfig.dataset}`,
+      name: `${etlConfig.etl_resource_prefix}-gold-${datasetConfig.dataset}`,
       description: `GOLD layer job for ${datasetConfig.dataset} - ${datasetConfig.description}`,
       role: glueRole.roleArn,
 
@@ -64,15 +68,15 @@ class FdaAllNdcStack extends cdk.Stack {
         // Dataset and database configuration
         '--dataset': datasetConfig.dataset,
         '--bucket_name': bucketName,
-        '--bronze_database': etlConfig.bronze_database,
-        '--gold_database': etlConfig.gold_database,
+        '--bronze_database': bronzeDatabase,
+        '--gold_database': goldDatabase,
 
         // Pre-computed paths
         '--gold_base_path': goldBasePath,
 
         // Compression and performance settings
         '--compression_codec': 'ZSTD',
-        '--crawler_name': `${etlConfig.warehouse_prefix}-gold-${datasetConfig.dataset}-crawler`,
+        '--crawler_name': `${etlConfig.etl_resource_prefix}-gold-${datasetConfig.dataset}-crawler`,
 
         // Additional job-specific arguments can be added here
         '--enable-auto-scaling': 'true'
@@ -81,10 +85,10 @@ class FdaAllNdcStack extends cdk.Stack {
 
     // Create Crawler for GOLD layer
     const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
-      name: `${etlConfig.warehouse_prefix}-gold-${datasetConfig.dataset}-crawler`,
+      name: `${etlConfig.etl_resource_prefix}-gold-${datasetConfig.dataset}-crawler`,
       description: `Crawler for GOLD ${datasetConfig.dataset} parquet files`,
       role: glueRole.roleArn,
-      databaseName: etlConfig.gold_database,
+      databaseName: goldDatabase,
 
       targets: {
         s3Targets: [{

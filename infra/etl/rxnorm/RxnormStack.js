@@ -37,23 +37,27 @@ class RxnormStack extends cdk.Stack {
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
 
+    // Compute database names from prefix
+    const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
+    const goldDatabase = `${etlConfig.database_prefix}_gold`;
+
     // Release date will be specified at runtime, not deployment time
 
     // Construct resource names from warehouse conventions
     const resourceNames = {
-      bronzeJob: `${etlConfig.warehouse_prefix}-bronze-${dataset}`,
-      rxcuiChangesJob: `${etlConfig.warehouse_prefix}-gold-rxcui-changes`,
-      goldEnrichmentJob: `${etlConfig.warehouse_prefix}-gold-rxnorm-ndc-mapping`,
+      bronzeJob: `${etlConfig.etl_resource_prefix}-bronze-${dataset}`,
+      rxcuiChangesJob: `${etlConfig.etl_resource_prefix}-gold-rxcui-changes`,
+      goldEnrichmentJob: `${etlConfig.etl_resource_prefix}-gold-rxnorm-ndc-mapping`,
       // Crawlers for each major table
-      rxnconsoCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxnconso-crawler`,
-      rxnsatCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxnsat-crawler`,
-      rxnrelCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxnrel-crawler`,
-      rxnstyCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxnsty-crawler`,
-      rxncuiCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxncui-crawler`,
-      rxnatomarchiveCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-rxnatomarchive-crawler`,
+      rxnconsoCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-rxnconso-crawler`,
+      rxnsatCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-rxnsat-crawler`,
+      rxnrelCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-rxnrel-crawler`,
+      rxnstyCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-rxnsty-crawler`,
+      rxncuiCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-rxncui-crawler`,
+      rxnatomarchiveCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-rxnatomarchive-crawler`,
       // Gold crawlers
-      rxcuiChangesCrawler: `${etlConfig.warehouse_prefix}-gold-rxcui-changes-crawler`,
-      ndcMappingCrawler: `${etlConfig.warehouse_prefix}-gold-rxnorm-ndc-mapping-crawler`
+      rxcuiChangesCrawler: `${etlConfig.etl_resource_prefix}-gold-rxcui-changes-crawler`,
+      ndcMappingCrawler: `${etlConfig.etl_resource_prefix}-gold-rxnorm-ndc-mapping-crawler`
     };
 
     // Get worker config based on dataset size category
@@ -64,9 +68,9 @@ class RxnormStack extends cdk.Stack {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
 
-    // S3 path fragments from warehouse config patterns
-    const rawPath = etlConfig.path_patterns.raw.replace('{dataset}', dataset).replace('run_id={run_id}/', '');
-    const bronzePath = `bronze/${dataset}`;
+    // S3 path fragments using convention
+    const rawPath = `raw/${dataset}/`;
+    const bronzePath = `bronze/${dataset}/`;
     const goldPath = `gold/`;
 
     // Deploy Glue scripts to S3
@@ -82,7 +86,7 @@ class RxnormStack extends cdk.Stack {
       role: rxnormGlueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${bucketName}/${etlConfig.path_patterns.bronze_script.replace('{dataset}', dataset)}`,
+        scriptLocation: `s3://${bucketName}/etl/${dataset}/glue/bronze_job.py`,
         pythonVersion: etlConfig.glue_defaults.python_version,
       },
       glueVersion: etlConfig.glue_defaults.version,
@@ -92,7 +96,7 @@ class RxnormStack extends cdk.Stack {
       timeout: 120, // 2 hours for large RxNORM download
       defaultArguments: {
         "--dataset": dataset,
-        "--bronze_database": etlConfig.bronze_database,
+        "--bronze_database": bronzeDatabase,
         "--raw_path": rawPath,
         "--bronze_path": bronzePath,
         "--compression_codec": "zstd",
@@ -120,8 +124,8 @@ class RxnormStack extends cdk.Stack {
       timeout: etlConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
-        "--bronze_database": etlConfig.bronze_database,
-        "--gold_database": etlConfig.gold_database,
+        "--bronze_database": bronzeDatabase,
+        "--gold_database": goldDatabase,
         "--bucket_name": bucketName,
         "--compression_codec": "zstd"
       },
@@ -143,8 +147,8 @@ class RxnormStack extends cdk.Stack {
       timeout: etlConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
-        "--bronze_database": etlConfig.bronze_database,
-        "--gold_database": etlConfig.gold_database,
+        "--bronze_database": bronzeDatabase,
+        "--gold_database": goldDatabase,
         "--bucket_name": bucketName,
         "--compression_codec": "zstd"
       },
@@ -170,7 +174,7 @@ class RxnormStack extends cdk.Stack {
       new glue.CfnCrawler(this, `Bronze${table.name.charAt(0).toUpperCase() + table.name.slice(1)}Crawler`, {
         name: crawlerName,
         role: rxnormGlueRole.roleArn,
-        databaseName: etlConfig.bronze_database,
+        databaseName: bronzeDatabase,
         targets: {
           s3Targets: [
             {
@@ -192,7 +196,7 @@ class RxnormStack extends cdk.Stack {
     new glue.CfnCrawler(this, "RxcuiChangesCrawler", {
       name: resourceNames.rxcuiChangesCrawler,
       role: rxnormGlueRole.roleArn,
-      databaseName: etlConfig.gold_database,
+      databaseName: goldDatabase,
       targets: {
         s3Targets: [
           {
@@ -212,7 +216,7 @@ class RxnormStack extends cdk.Stack {
     new glue.CfnCrawler(this, "NdcMappingCrawler", {
       name: resourceNames.ndcMappingCrawler,
       role: rxnormGlueRole.roleArn,
-      databaseName: etlConfig.gold_database,
+      databaseName: goldDatabase,
       targets: {
         s3Targets: [
           {

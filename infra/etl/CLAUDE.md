@@ -1,495 +1,127 @@
-# ETL Data Warehouse Architecture Guide
+# ETL Data Pipeline Architecture
 
-## Strategic Paradigms & Decisions
+## Core Principles
 
-### Simplified Data Architecture
-We implement a **Raw → Bronze** approach for initial datasets:
+- **Convention over Configuration**: Predictable patterns reduce config complexity
+- **DRY**: Single source of truth for naming and conventions
+- **Raw → Bronze**: Simple data flow for initial processing
+- **Kill-and-Fill**: Complete data refresh each run for simplicity
 
-- **Raw Layer**: S3 prefix `raw/{dataset}/run_id={run_id}/` - Original source data (zip, csv) with run-based organization
-- **Bronze Layer**: S3 prefix `bronze/bronze_{dataset}/` - Cleaned, typed parquet with basic transformations (date formatting, column naming)
-- **Silver/Gold Layers**: (Future) Advanced transformations and analytics marts as needed
+## Architecture Overview
 
-### Resource Naming Conventions
-All resources follow consistent `pp-dw-{layer}-{dataset}` naming:
-
-**Glue Jobs:**
-- `pp-dw-bronze-{dataset}`
-
-**Crawlers:**
-- `pp-dw-bronze-{dataset}-crawler`
-
-
-**Databases:**
-- `pp_dw_bronze` (shared across all datasets)
-
-**Tables:**
-- `{dataset}` for single-table datasets (e.g., `fda_nsde`)
-- `{dataset}_{table_type}` for multi-table datasets (e.g., `fda_cder_products`, `fda_cder_packages`, `rxnorm_rxnconso`, `rxnorm_rxnsat`)
-
-### Data Storage Strategy
-- **Raw data**: Partitioned by `run_id` for lineage tracking
-- **Bronze data**: Simple kill-and-fill approach - full overwrite each run for simplicity
-
-### Data Quality & Lineage
-**Bronze Layer Standards:**
-- Explicit column mappings from source to target names (no auto-cleaning)
-- Proper data types (dates as DATE, not strings)
-- Metadata columns: `meta_run_id` (human-readable timestamp format)
-- Compression: ZSTD for optimal storage/performance balance
-- Kill-and-fill approach: complete overwrite each run for maximum simplicity
-
-### Infrastructure Pattern
-**Core + Dataset Stack Separation:**
-- **EtlCoreStack**: Shared S3 bucket, Glue database, shared IAM roles
-- **Dataset Stacks**: Dataset-specific Glue job, crawler, script deployment
-- Clean separation of concerns with direct stack references (not CloudFormation exports)
-- Core infrastructure deployed once, dataset stacks can deploy independently
-- **Glue Script Deployment**: Scripts automatically uploaded to S3 via CDK BucketDeployment during stack deployment
-
-### IAM Role Strategy (Least Privilege)
-**Shared Glue Role (Default):**
-- Created in EtlCoreStack for basic ETL operations
-- Permissions: S3 read/write, Glue catalog access, CloudWatch logs
-- Used by most datasets (FDA NSDE, CDER, etc.)
-- **No sensitive permissions** (no Secrets Manager, no external APIs)
-
-**Custom Glue Roles (When Needed):**
-- Created in individual dataset stacks for sensitive operations
-- **Required for**: Secrets Manager access, external API calls, special permissions
-- Example: RxNORM needs UMLS API key from Secrets Manager
-- Inherits basic Glue permissions + specific sensitive permissions
-
-**Implementation Pattern:**
-```javascript
-// ❌ BAD - Adding secrets access to shared role affects all datasets
-const sharedRole = props.etlCoreStack.glueRole;
-sharedRole.addToPolicy(secretsPolicy); // DON'T DO THIS
-
-// ✅ GOOD - Create dataset-specific role for sensitive operations
-const datasetGlueRole = new iam.Role(this, "DatasetGlueRole", {
-  assumedBy: new iam.ServicePrincipal("glue.amazonaws.com"),
-  managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSGlueServiceRole")],
-});
-dataWarehouseBucket.grantReadWrite(datasetGlueRole);
-datasetGlueRole.addToPolicy(secretsPolicy); // Only this dataset gets secrets access
+```
+EventBridge → Glue Job → S3 (Raw + Bronze) → Crawler → Athena
 ```
 
-### S3 Organization
+**Infrastructure Pattern:**
+- **EtlCoreStack**: Shared S3 bucket, Glue databases, IAM roles
+- **Dataset Stacks**: Per-dataset Glue jobs, crawlers, script deployment
+
+## Configuration Structure
+
+**`config.json`** - Core ETL settings:
+```json
+{
+  "etl_resource_prefix": "pp-dw",        // AWS resource naming
+  "database_prefix": "pp_dw",            // Glue database naming
+  "glue_defaults": { ... },              // Worker configs, logging, timeouts
+  "glue_worker_configs": { ... }         // Size-based worker allocation
+}
+```
+
+**Dataset configs** - `{dataset}/config.json`:
+- `dataset`: Name used in paths and resources
+- `data_size_category`: Determines worker allocation (small/medium/large/xlarge)
+- `source_url` or `api_endpoints`: Data source configuration
+
+## Naming Conventions
+
+**AWS Resources:**
+- Jobs: `{etl_resource_prefix}-{layer}-{dataset}` → `pp-dw-bronze-fda-nsde`
+- Crawlers: `{etl_resource_prefix}-{layer}-{dataset}-crawler`
+- Bucket: `{etl_resource_prefix}-{account}` → `pp-dw-123456789`
+
+**Glue Databases:**
+- Bronze: `{database_prefix}_bronze` → `pp_dw_bronze`
+- Gold: `{database_prefix}_gold` → `pp_dw_gold`
+
+**S3 Path Conventions:**
 ```
 s3://pp-dw-{account}/
-├── etl/{dataset}/glue/                                # Deployed Glue job scripts
-├── raw/{dataset}/run_id={run_id}/                     # Original source files
-├── bronze/{dataset}/                                  # Cleaned parquet, kill-and-fill
-└── silver/{dataset}/                                  # (Future) Business logic and analytics
+├── raw/{dataset}/run_id={timestamp}/     # Original source files
+├── bronze/{dataset}/                     # Cleaned parquet files
+├── gold/{dataset}/                       # Business logic transformations
+└── etl/{dataset}/glue/                   # Deployed job scripts
 ```
 
-**Note**: ETL configuration is now handled entirely at deployment time via CDK arguments - no config files are deployed to S3. Glue job scripts are automatically deployed to `etl/{dataset}/glue/` during CDK deployment.
+**Glue Script Conventions:**
+- Bronze: `etl/{dataset}/glue/bronze_job.py`
+- Gold: `etl/{dataset}/glue/gold_job.py`
 
-### Configuration Architecture
-**Deployment-Time Configuration** - All configuration is now handled via CDK and passed as Glue job arguments:
+## Stack Implementation Patterns
 
-**ETL-level config** (`./config.json`) - Read at CDK deployment time:
-- Warehouse naming conventions and prefixes
-- Shared database name (`pp_dw_bronze`)
-- S3 path patterns for raw and bronze layers
-- Worker configurations by data size (small, medium, large, xlarge)
-- Default Glue settings (version, python, timeouts)
-
-**Dataset-specific config** (`./fda-{dataset}/config.json`) - Read at CDK deployment time:
-- Dataset name, source URL, description
-- `data_size_category`: Determines Glue worker allocation
-- Dataset-specific settings (schedules, data quality rules)
-
-**Glue Job Arguments** - All configuration passed via `defaultArguments`:
-- Clean S3 path fragments (jobs construct full S3 URLs)
-- Database names, crawler names, timeouts
-- Spark settings, compression codecs
-- Data transformation rules (date formatting, explicit column mappings)
-
-### S3 Path Pattern (CRITICAL)
-
-**✅ STANDARD PATTERN - Always Follow This:**
-
+**Path Computation (Convention-based):**
 ```javascript
-// In CDK Stack - pass ONLY path fragments
-defaultArguments: {
-  "--bucket_name": bucketName,
-  "--raw_path": `raw/${dataset}/`,           // Just the path fragment
-  "--bronze_path": `bronze/${dataset}/`,     // Just the path fragment
-  // ... other arguments
-}
+// Computed in stack files, not config
+const rawPath = `raw/${dataset}/`;
+const bronzePath = `bronze/${dataset}/`;
+const scriptLocation = `s3://${bucketName}/etl/${dataset}/glue/bronze_job.py`;
+
+// Database names computed from prefix
+const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
 ```
 
-```python
-# In Glue Job - construct full S3 URLs consistently
-bucket_name = args['bucket_name']
-raw_path_fragment = args['raw_path']
-bronze_path_fragment = args['bronze_path']
-
-# Build full S3 paths in job
-raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
-bronze_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}"
-
-# Write data using full S3 URLs
-df.write.parquet(bronze_s3_path)
-s3_client.upload_fileobj(file_obj, bucket_name, f"{raw_path_fragment}run_id={run_id}/filename.json")
-```
-
-**❌ NEVER Do These (Anti-Patterns):**
-- ❌ Pass full S3 URLs like `s3://bucket/path/` from stack to job
-- ❌ Use `rstrip('/')` or other string manipulation on S3 paths
-- ❌ Mix path fragments with full S3 URLs
-- ❌ Construct S3 URLs in CDK and pass to jobs
-
-**Benefits of This Pattern:**
-- ✅ **Clear separation**: Stack handles config, Job handles S3 construction
-- ✅ **No runtime string manipulation**: Eliminates brittle `rstrip()` calls
-- ✅ **Consistent**: Same pattern across all datasets
-- ✅ **Debuggable**: Easy to see exactly what paths are being used
-
-### CRITICAL: Parameter Name Coordination
-
-**⚠️ DEPLOYMENT BREAKING RULE:**
-
-When updating S3 path patterns, you MUST update BOTH the CDK stack and Glue job parameter names simultaneously. Mismatched parameter names will cause `GlueArgumentError` at runtime.
-
-**Required Coordination Checklist:**
-
-✅ **Stack passes these exact parameter names:**
-```javascript
-defaultArguments: {
-  "--raw_path": rawPath,      // "raw/dataset/"
-  "--bronze_path": bronzePath, // "bronze/dataset/"
-  // ... other args
-}
-```
-
-✅ **Job expects these exact parameter names:**
-```python
-args = getResolvedOptions(sys.argv, [
-    'JOB_NAME', 'bucket_name', 'dataset',
-    'raw_path', 'bronze_path',  # Must match stack exactly
-    # ... other args
-])
-```
-
-✅ **Job uses path fragments correctly:**
-```python
-raw_path_fragment = args['raw_path']
-bronze_path_fragment = args['bronze_path']
-raw_s3_path = f"s3://{bucket_name}/{raw_path_fragment}run_id={run_id}/"
-bronze_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}"
-```
-
-**❌ NEVER update only one side:**
-- ❌ Update stack arguments but not job `getResolvedOptions()`
-- ❌ Update job parameters but not stack `defaultArguments`
-- ❌ Deploy with mismatched parameter names
-
-**Deployment Test:** Always test parameter coordination by deploying and running at least one job before committing changes.
-
-**Benefits**:
-- ✅ **Faster startup**: No S3 config reads during job execution
-- ✅ **More reliable**: Eliminates NoSuchKey configuration errors
-- ✅ **Explicit dependencies**: All configuration visible in CDK
-- ✅ **Deployment-time validation**: Config errors caught at deploy time
-
-### Adding New Datasets
-To add a new dataset (e.g., `fda-rxnorm`):
-
-1. **Create dataset config**: `./fda-rxnorm/config.json`
-   - Set appropriate `data_size_category` based on expected data volume
-   - Include `source_url` for data download
-2. **Create complete Glue job**: `./fda-rxnorm/glue/bronze_job.py`
-   - Copy from existing jobs - handles download + transform in single job
-   - All configuration automatically passed as Glue job arguments
-3. **Create dataset stack**: `./fda-rxnorm/FdaRxnormStack.js`
-   - **For basic datasets**: Use shared Glue role from `props.etlCoreStack.glueRole`
-   - **For sensitive datasets**: Create custom role with additional permissions
-   - Include BucketDeployment for automatic Glue script upload to S3
-4. **Update index.js**: Add new stack instantiation with `etlCoreStack` reference and dependency
-5. **Deploy**: `cdk deploy --all` creates all resources with consistent naming
-
-**Role Decision Matrix:**
-- **Use Shared Role**: Public data sources, no authentication, standard S3/Glue operations
-- **Create Custom Role**: Secrets Manager access, external APIs, special permissions, authentication required
-
-**Note**: Single Glue jobs handle the complete ETL pipeline - no separate download/transform steps needed.
-
-### Key Decisions & Rationale
-
-**Why Datetime Partitioning?**
-- Enables multiple runs per day without conflicts
-- Query performance for time-based analysis
-- Natural partition pruning for operational queries
-
-**Why Core + Dataset Stack Pattern?**
-- Shared infrastructure deployed once, reused across datasets
-- Dataset stacks can be deployed independently 
-- Clear separation of shared vs dataset-specific concerns
-- Scales cleanly as new datasets are added
-
-**Why Raw-to-Bronze Approach?**
-- Raw data preserved immutably for reprocessability
-- Bronze handles essential transformations (typing, cleaning, date formatting)
-- Additional layers added as business needs evolve
-- Simple starting point that can be enhanced
-
-**Why Prefix-Based Organization?**
-- Single bucket simplifies permissions
-- Clear data lifecycle visibility
-- Cost-effective storage management
-- Scales naturally with new datasets
-
-### Data Processing Flow
-```
-EventBridge → Glue Job (download + transform) → S3 Raw + Bronze → 
-Crawler → Athena Tables → Analytics
-```
-
-The single Glue job handles:
-1. **Download**: Fetch source data from URL with timeout handling
-2. **Raw Storage**: Save original files to S3 for lineage and debugging  
-3. **Transform**: Map columns explicitly, format dates, add metadata
-4. **Bronze Storage**: Write parquet files (kill-and-fill approach)
-5. **Schema Update**: Trigger crawler for Athena table updates
-
-- **Complete autonomy**: One job does everything from download to Athena-ready data
-- **Clear lineage**: Raw files preserved with run_id for full traceability
-- **Worker sizing is automatic** based on dataset's `data_size_category`
-
-### Critical Implementation Patterns
-
-**✅ ALWAYS Follow These Patterns:**
-
-**1. Memory-Efficient File Processing:**
-- Use temporary files with `tempfile.NamedTemporaryFile()` for downloads
-- Stream directly to S3 with `s3_client.upload_fileobj()` - never load entire files into memory
-- Download once, upload to S3, then extract from temp file (avoid double downloads)
-- Include retry logic with exponential backoff for network failures
-- Stream extracted files directly to S3 using `zipfile` and `upload_fileobj()`
-
-**2. Glue Job Structure:**
-- Always include `'JOB_NAME'` in `getResolvedOptions()` - critical for job initialization
-- Use `SparkContext()` not `SparkContext.getOrCreate()`
-- Configure Spark compression immediately after initialization
-- Read data from S3 paths with Spark - never from local filesystem
-
-**3. Data Flow Philosophy:**
-- **Raw Layer**: Preserve original files exactly as downloaded for lineage
-- **S3-First**: All data processing happens via S3, never local files
-- **Streaming**: Handle files of any size without memory constraints
-- **Retry Resilience**: Network operations must handle transient failures
-
-**❌ NEVER Do These (Common Mistakes):**
-- ❌ Load entire files into memory with `response.read()`
-- ❌ Read from local filesystem with `file://` paths
-- ❌ Omit retry logic for network operations
-- ❌ Try to create Glue catalog tables in jobs (let crawlers handle schema)
-- ❌ Download the same file multiple times
-- ❌ Leave undefined variable references when refactoring (always search for old variable names)
-
-### API-Based ETL Patterns
-
-**When Source is REST API (not file downloads):**
-
-**✅ API Collection Best Practices:**
-- Use `urllib.request` with proper headers (`User-Agent`, `Accept`, `Connection: close`)
-- Implement respectful rate limiting between API calls (0.5-1 second delays)
-- Include timeout handling (30+ seconds for API calls)
-- Save raw API responses as JSON for lineage (not just final aggregated data)
-- Include retry logic with exponential backoff for network failures
-- Handle pagination if API supports it
-- Log progress for multi-step collection processes
-
-**API ETL Job Arguments:**
-- Pass API endpoint URLs as separate arguments (not single `source_url`)
-- Include API-specific parameters (rate limits, timeout values)
-- Example: `--class_types_url`, `--all_classes_url`, `--api_key_secret_name`
-
-**Hierarchical API Collection Pattern:**
-
-For APIs requiring multiple calls (get list → iterate details):
-
-```python
-# Step 1: Fetch master list (e.g., class types)
-master_data = fetch_json_with_retry(master_url)
-save_raw_json_to_s3(master_data, "master_response.json")
-
-# Step 2: Extract items to iterate
-items = extract_items_from_response(master_data)
-
-# Step 3: Iterate with respectful delays
-all_details = []
-for i, item in enumerate(items):
-    detail_data = fetch_json_with_retry(detail_url_for_item(item))
-    save_raw_json_to_s3(detail_data, f"detail_{safe_filename(item)}.json")
-    all_details.extend(extract_details(detail_data))
-
-    # Be respectful - delay between requests
-    if i < len(items) - 1:
-        time.sleep(0.5)
-
-# Step 4: Aggregate and save complete dataset
-aggregated_data = {
-    "metadata": {"run_id": run_id, "total_items": len(all_details)},
-    "data": all_details
-}
-save_raw_json_to_s3(aggregated_data, "complete_dataset.json")
-```
-
-**API Error Handling:**
-```python
-def fetch_json_with_retry(url, max_retries=3, delay=1):
-    for attempt in range(max_retries):
-        try:
-            headers = {
-                'User-Agent': 'AWS-Glue-ETL-Job/1.0',
-                'Accept': 'application/json',
-                'Connection': 'close'
-            }
-            request = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return json.loads(response.read().decode('utf-8'))
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(delay)
-                delay *= 2  # Exponential backoff
-            else:
-                raise Exception(f"Failed after {max_retries} attempts: {str(e)}")
-```
-
-### Code Refactoring Checklist
-
-When updating jobs to streaming approach:
-
-1. **Before making changes**: Search entire file for `zip_data`, `csv_data`, `response.read()`
-2. **Replace download logic**: Use temporary file + `shutil.copyfileobj()`
-3. **Replace upload logic**: Use `s3_client.upload_fileobj()` instead of `put_object(Body=data)`
-4. **Update size reporting**: Replace `len(zip_data)` with `content_length or 'unknown'`
-5. **Test deployment**: Always deploy and test after refactoring
-6. **Final verification**: Search again for old variable names to ensure none remain
-
-### Autonomous Table Management
-
-**Kill-and-Fill Approach**: Bronze jobs implement simple table management:
-
-1. **Data Overwrite**: Each run completely overwrites the bronze table data
-2. **Schema Updates**: Crawlers run manually when schema changes are needed
-3. **No Partition Management**: Simple single-table structure without partitions
-
-**Benefits:**
-- ✅ **Maximum Simplicity**: No complex partition or merge logic
-- ✅ **Always Fresh**: Complete dataset refresh every run
-- ✅ **Schema Evolution**: Crawler detects schema changes when manually triggered
-- ✅ **Easy Debugging**: Clear data lineage - one run = one complete dataset
-- ✅ **Fast Development**: Perfect for testing and iteration
-
-**Crawler Management Strategy**:
-- **Bronze jobs**: Print manual crawler instruction - do NOT auto-trigger crawlers
-- **Gold/Silver jobs**: May auto-trigger crawlers as they are downstream transformations
-- **First deployment**: Run crawler manually via AWS Console to create initial table
-- **Schema changes**: Run crawler manually when data structure changes
-- **Normal operations**: No crawler needed - existing table schema handles data updates
-
-**Bronze Job Pattern:**
-```python
-print("Note: Run crawler manually via console if schema changes are needed")
-```
-
-### Performance Optimization
-
-**Worker Configuration by Data Size (AWS Best Practices):**
-
-**API/Small Data (<1000 records)**:
-- **Configuration**: G.1X with 2 workers - Minimum viable configuration
-- **Typical sources**: Classification systems, lookup tables, REST API responses
-- **Processing time**: <5 minutes
-- **Examples**: RxClass, drug vocabularies, reference data, regulatory lookups
-
-**File/Small Data (<100MB)**:
-- **Configuration**: G.1X with 2 workers - Minimum viable configuration
-- **Typical sources**: Small CSV files, compressed archives
-- **Examples**: Small regulatory datasets, configuration files
-
-**File/Medium Data (100MB-1GB)**:
-- **Configuration**: G.1X with 5 workers - Optimal for 5-10 DPU recommendation
-- **Typical sources**: Medium CSV files, ZIP archives
-- **Examples**: FDA NSDE, medium regulatory datasets
-
-**File/Large Data (1GB-5GB)**:
-- **Configuration**: G.1X with 10 workers - Horizontal scaling for parallelism
-- **Typical sources**: Large ZIP files, multiple CSV files
-- **Examples**: Comprehensive drug databases, large regulatory exports
-
-**File/XLarge Data (>5GB)**:
-- **Configuration**: G.2X with 10 workers - Vertical + horizontal scaling for memory-intensive workloads
-- **Typical sources**: Very large archives, complex nested datasets
-- **Examples**: RxNORM full releases, comprehensive medical vocabularies
-
-### CloudWatch Logging & Monitoring
-
-**Default Logging Configuration**:
-All Glue jobs automatically inherit CloudWatch logging from the ETL core configuration:
-
-```javascript
-// In config.json - automatically applied to all Glue jobs
-"glue_defaults": {
-  "logging_arguments": {
-    "--enable-metrics": "true",
-    "--enable-continuous-cloudwatch-log": "true",
-    "--enable-continuous-log-filter": "true",
-    "--continuous-log-logGroup": "/aws-glue/jobs/logs-v2",
-    "--enable-spark-ui": "true"
-  }
-}
-
-// In dataset stacks - spread the default logging arguments
-defaultArguments: {
-  // Dataset-specific arguments...
-  "--dataset": dataset,
-  "--bucket_name": bucketName,
-
-  // Default logging (inherited from ETL config)
-  ...etlConfig.glue_defaults.logging_arguments,
-
-  // Job-specific logging overrides
-  "--continuous-log-logStreamPrefix": jobName,
-  "--spark-event-logs-path": `s3://${bucketName}/spark-logs/`
-}
-```
-
-**Where to Find Logs**:
-- **CloudWatch Logs**: `/aws-glue/jobs/logs-v2` log group
-- **Log Streams**: Named with job name prefix for easy filtering
-- **Spark UI**: Available during job execution for performance analysis
-- **Job Metrics**: Available in CloudWatch Metrics under `AWS/Glue`
-
-**Log Stream Naming Pattern**: `{jobName}/{run-id}/{execution-timestamp}`
-
-### CDK Development Guidelines
-
-**IMPORTANT: No Console Logging During CDK Build**
-- **NEVER** use `console.log()` statements in CDK stack constructors
-- Console output during `cdk deploy` creates noise and clutters deployment logs
-- Use CDK outputs (`CfnOutput`) for important information instead
-- Debug information should be in comments or removed before commit
-
-**Clean Deployment Output:**
-```javascript
-// ❌ BAD - Creates noise during deployment
-console.log(`Creating stack for ${dataset}`);
-console.log(`Worker config: ${JSON.stringify(config)}`);
-
-// ✅ GOOD - Use CfnOutput for important info
-new cdk.CfnOutput(this, "DatasetName", {
-  value: dataset,
-  description: "Dataset being processed"
-});
-```
-
-### Future Considerations
-- **Cost optimization**: Lifecycle rules for old raw data
-- **Security**: Least-privilege IAM, encryption at rest/transit
-- **Monitoring**: CloudWatch metrics and alerts for job failures
-- **Real-time**: Consider Kinesis/Lambda for streaming data sources
+**IAM Role Strategy:**
+- **Shared Role**: Used by most datasets (S3, Glue, CloudWatch access)
+- **Custom Role**: For sensitive operations (Secrets Manager, external APIs)
+
+**Worker Configuration:**
+- **small**: G.1X × 2 workers (< 100MB, API data)
+- **medium**: G.1X × 5 workers (100MB - 1GB)
+- **large**: G.1X × 10 workers (1GB - 5GB)
+- **xlarge**: G.2X × 10 workers (> 5GB)
+
+## Data Processing Patterns
+
+**Bronze Layer:**
+- Download source data → Save to S3 raw
+- Transform: Clean columns, type data, add `meta_run_id`
+- Output: Parquet with ZSTD compression
+- Kill-and-fill approach (complete overwrite)
+
+**Glue Job Best Practices:**
+- Use `tempfile.NamedTemporaryFile()` for downloads
+- Stream to S3 with `s3_client.upload_fileobj()` (never load entire files in memory)
+- Include retry logic with exponential backoff
+- Read data from S3 paths with Spark, never local filesystem
+
+**Crawler Management:**
+- Bronze jobs: Print manual crawler instruction (don't auto-trigger)
+- Run crawlers manually when schema changes
+- Let crawlers handle table creation and schema updates
+
+## Adding New Datasets
+
+1. **Create dataset config**: `{dataset}/config.json`
+2. **Create Glue job**: `{dataset}/glue/bronze_job.py`
+3. **Create dataset stack**: `{dataset}/{Dataset}Stack.js`
+4. **Update index.js**: Add stack with dependency on EtlCoreStack
+5. **Deploy**: `cdk deploy --all`
+
+**Role Decision:**
+- Use shared role for public data sources
+- Create custom role for APIs requiring authentication/secrets
+
+## Critical Implementation Rules
+
+**✅ Always Follow:**
+- Compute paths by convention, don't use config patterns
+- Use `getResolvedOptions()` with exact parameter names matching stack
+- Stream file processing to handle any data size
+- Include proper error handling and logging
+
+**❌ Never Do:**
+- Load entire files into memory
+- Use string replacement on S3 paths
+- Auto-trigger crawlers from bronze jobs
+- Reference undefined variables after refactoring

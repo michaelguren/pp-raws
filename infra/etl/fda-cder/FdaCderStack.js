@@ -15,12 +15,14 @@ class FdaCderStack extends cdk.Stack {
     const etlConfig = require("../config.json");
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
-    
+
+    // Compute database names from prefix
+    const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;    
     // Construct resource names from warehouse conventions
     const resourceNames = {
-      bronzeJob: `${etlConfig.warehouse_prefix}-bronze-${dataset}`,
-      bronzeProductsCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-products-crawler`,
-      bronzePackagesCrawler: `${etlConfig.warehouse_prefix}-bronze-${dataset}-packages-crawler`
+      bronzeJob: `${etlConfig.etl_resource_prefix}-bronze-${dataset}`,
+      bronzeProductsCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-products-crawler`,
+      bronzePackagesCrawler: `${etlConfig.etl_resource_prefix}-bronze-${dataset}-packages-crawler`
     };
 
     // Get worker config based on dataset size category
@@ -31,13 +33,13 @@ class FdaCderStack extends cdk.Stack {
       throw new Error(`Invalid data_size_category: ${sizeCategory}. Must be one of: small, medium, large, xlarge`);
     }
 
-    // Build S3 paths from warehouse config patterns  
-    const bronzeProductsPath = etlConfig.path_patterns.bronze.replace('{dataset}', `${dataset}_products`);
-    const bronzePackagesPath = etlConfig.path_patterns.bronze.replace('{dataset}', `${dataset}_packages`);
-    
-    // S3 path fragments from warehouse config patterns
-    const rawPath = etlConfig.path_patterns.raw.replace('{dataset}', dataset).replace('run_id={run_id}/', '');
-    const bronzePath = `bronze/${dataset}`;
+    // S3 paths using convention
+    const bronzeProductsPath = `bronze/${dataset}_products/`;
+    const bronzePackagesPath = `bronze/${dataset}_packages/`;
+
+    // S3 path fragments using convention
+    const rawPath = `raw/${dataset}/`;
+    const bronzePath = `bronze/${dataset}/`;
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
@@ -52,7 +54,7 @@ class FdaCderStack extends cdk.Stack {
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: `s3://${bucketName}/${etlConfig.path_patterns.bronze_script.replace('{dataset}', dataset)}`,
+        scriptLocation: `s3://${bucketName}/etl/${dataset}/glue/bronze_job.py`,
         pythonVersion: etlConfig.glue_defaults.python_version,
       },
       glueVersion: etlConfig.glue_defaults.version,
@@ -63,7 +65,7 @@ class FdaCderStack extends cdk.Stack {
       defaultArguments: {
         "--dataset": dataset,
         "--source_url": datasetConfig.source_url,
-        "--bronze_database": etlConfig.bronze_database,
+        "--bronze_database": bronzeDatabase,
         "--raw_path": rawPath,
         "--bronze_path": bronzePath,
         "--date_format": datasetConfig.date_format,
@@ -78,7 +80,7 @@ class FdaCderStack extends cdk.Stack {
     new glue.CfnCrawler(this, "BronzeProductsCrawler", {
       name: resourceNames.bronzeProductsCrawler,
       role: glueRole.roleArn,
-      databaseName: etlConfig.bronze_database,
+      databaseName: bronzeDatabase,
       targets: {
         s3Targets: [
           {
@@ -99,7 +101,7 @@ class FdaCderStack extends cdk.Stack {
     new glue.CfnCrawler(this, "BronzePackagesCrawler", {
       name: resourceNames.bronzePackagesCrawler,
       role: glueRole.roleArn,
-      databaseName: etlConfig.bronze_database,
+      databaseName: bronzeDatabase,
       targets: {
         s3Targets: [
           {
