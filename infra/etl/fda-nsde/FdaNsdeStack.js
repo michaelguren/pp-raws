@@ -68,8 +68,8 @@ class FdaNsdeStack extends cdk.Stack {
         "--date_format": datasetConfig.date_format,
         "--compression_codec": "zstd",
         "--bucket_name": bucketName,
-        // Default logging arguments (from ETL config)
-        ...etlConfig.glue_defaults.logging_arguments,
+        // Default arguments (from ETL config)
+        ...etlConfig.glue_defaults.default_arguments,
       },
     });
 

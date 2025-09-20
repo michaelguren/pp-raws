@@ -6,7 +6,9 @@
   "scripts": {
     "cdk": "cdk",
     "deploy": "cdk deploy --all",
+    "deploy:stack": "cdk deploy",
     "diff": "cdk diff",
+    "diff:stack": "cdk diff",
     "synth": "cdk synth",
     "bootstrap": "cdk bootstrap",
     "repomix-all": "repomix . --style markdown --compress --output-show-line-numbers --header-text \"Forget all previous project files. Only use the file I'm uploading now as the sole source of truth.\" -o ~/Desktop/pp-raws.md",

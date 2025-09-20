@@ -65,8 +65,8 @@ class RxnormSplMappingsStack extends cdk.Stack {
         "--compression_codec": "zstd",
         "--bucket_name": bucketName,
         "--source_url": datasetConfig.source_url,
-        // Default logging arguments (from ETL config)
-        ...etlConfig.glue_defaults.logging_arguments,
+        // Default arguments (from ETL config)
+        ...etlConfig.glue_defaults.default_arguments,
         // Job-specific logging overrides
         "--spark-event-logs-path": `s3://${bucketName}/spark-logs/`
       },

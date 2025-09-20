@@ -93,7 +93,7 @@ class RxnormStack extends cdk.Stack {
       workerType: workerConfig.worker_type,
       numberOfWorkers: workerConfig.number_of_workers,
       maxRetries: etlConfig.glue_defaults.max_retries,
-      timeout: 120, // 2 hours for large RxNORM download
+      timeout: etlConfig.glue_defaults.timeout_minutes,
       defaultArguments: {
         "--dataset": dataset,
         "--bronze_database": bronzeDatabase,
@@ -103,8 +103,8 @@ class RxnormStack extends cdk.Stack {
         "--bucket_name": bucketName,
         "--umls_api_secret": "umls-api-key",
         "--tables_to_process": "RXNCONSO,RXNSAT,RXNREL,RXNSTY,RXNCUI,RXNATOMARCHIVE",
-        // Default logging arguments (from ETL config)
-        ...etlConfig.glue_defaults.logging_arguments,
+        // Default arguments (from ETL config)
+        ...etlConfig.glue_defaults.default_arguments,
       },
     });
 

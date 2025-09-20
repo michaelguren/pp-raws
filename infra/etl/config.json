@@ -2,11 +2,11 @@
   "etl_resource_prefix": "pp-dw",
   "database_prefix": "pp_dw",
   "glue_defaults": {
-    "version": "4.0",
+    "version": "5.0",
     "python_version": "3",
     "timeout_minutes": 30,
     "max_retries": 1,
-    "logging_arguments": {
+    "default_arguments": {
       "--enable-metrics": "true",
       "--enable-continuous-cloudwatch-log": "true",
       "--enable-continuous-log-filter": "true",
