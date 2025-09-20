@@ -1,5 +1,7 @@
 # ETL Data Pipeline Architecture
 
+**IMPORTANT**: First read `../CLAUDE.md` for general infrastructure requirements.
+
 ## Core Principles
 
 - **Convention over Configuration**: Predictable patterns reduce config complexity
@@ -94,6 +96,18 @@ const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
 - Stream to S3 with `s3_client.upload_fileobj()` (never load entire files in memory)
 - Include retry logic with exponential backoff
 - Read data from S3 paths with Spark, never local filesystem
+
+**Spark Configuration:**
+```python
+# ✅ Use current parquet settings
+spark.conf.set("spark.sql.parquet.summary.metadata.level", "ALL")
+```
+
+**S3 Connector Strategy:**
+- **Current**: Using EMRFS (`s3://`) - Glue 5.0 default, stable, optimized
+- **Future**: Consider S3A (`s3a://`) benchmarking after pipeline stabilizes
+- EMRFS provides optimized Parquet committer out of the box
+- For greenfield testing, stick with `s3://` URIs for fastest iteration
 
 **Crawler Management:**
 - Bronze jobs: Print manual crawler instruction (don't auto-trigger)

@@ -29,6 +29,7 @@ job.init(args['JOB_NAME'], args)
 
 # Configure Spark
 spark.conf.set("spark.sql.parquet.compression.codec", args['compression_codec'])
+spark.conf.set("spark.sql.parquet.summary.metadata.level", "ALL")
 
 # Generate human-readable runtime run_id
 from datetime import datetime
