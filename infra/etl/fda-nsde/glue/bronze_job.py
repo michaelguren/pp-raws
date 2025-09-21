@@ -10,12 +10,13 @@ from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
 from awsglue.job import Job  # type: ignore[import-not-found]
 from pyspark.sql.functions import lit, col, when, to_date  # type: ignore[import-not-found]
+from etl_utils import download_and_extract # type: ignore[import-not-found]
 
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'dataset',
     'source_url', 'bronze_database', 'raw_path', 'bronze_path',
-    'date_format', 'compression_codec', 'file_table_mapping'
+    'compression_codec', 'file_table_mapping', 'column_schema'
 ])
 
 # Initialize Glue
@@ -38,8 +39,8 @@ import json
 dataset = args['dataset']
 source_url = args['source_url']
 bronze_database = args['bronze_database']
-date_format = args['date_format']
 file_table_mapping = json.loads(args['file_table_mapping'])
+column_schema = json.loads(args['column_schema']) if 'column_schema' in args else None
 
 # S3 paths are already complete URLs from stack
 import posixpath
@@ -59,45 +60,50 @@ raw_prefix = raw_path_parts[1] if len(raw_path_parts) > 1 else ''
 sys.path.append('/tmp')
 s3_client = boto3.client('s3')
 s3_client.download_file(raw_bucket, 'etl/util-runtime/etl_utils.py', '/tmp/etl_utils.py')
-from etl_utils import download_and_extract
 
 print(f"Starting Complete ETL for {dataset} (download + transform)")
 print(f"Source URL: {source_url}")
 print(f"Raw path: {raw_s3_path}")
 print(f"Bronze path: {bronze_s3_path}")
 print(f"Run ID: {run_id}")
-print(f"Date format: {date_format}")
 print(f"Bronze database: {bronze_database}")
+print(f"Schema-driven: {'Yes' if column_schema else 'No'}")
 print(f"Mode: overwrite (kill-and-fill)")
 
-def apply_column_mapping(df, column_mapping):
-    """Apply column name mapping to DataFrame"""
-    for old_col, new_col in column_mapping.items():
-        if old_col in df.columns:
-            df = df.withColumnRenamed(old_col, new_col)
+def apply_schema(df, column_schema):
+    """Apply column schema including renaming and type casting"""
+    if not column_schema:
+        return df
+
+    for source_col, config in column_schema.items():
+        if source_col not in df.columns:
+            continue
+
+        target_col = config['target_name']
+        col_type = config.get('type', 'string')
+
+        # Rename column
+        df = df.withColumnRenamed(source_col, target_col)
+
+        # Apply type conversions
+        if col_type == 'date':
+            date_format = config.get('format', 'yyyyMMdd')
+            df = df.withColumn(
+                target_col,
+                when(col(target_col).isNull() | (col(target_col) == ""), lit(None))
+                .otherwise(to_date(col(target_col).cast("string"), date_format))
+            )
+        elif col_type == 'integer':
+            df = df.withColumn(target_col, col(target_col).cast('integer'))
+        elif col_type == 'decimal':
+            df = df.withColumn(target_col, col(target_col).cast('decimal(10,2)'))
+        elif col_type == 'boolean':
+            df = df.withColumn(target_col, col(target_col).cast('boolean'))
+        # string is default, no casting needed
+
     return df
 
-def safe_key(prefix, name):
-    """Prevent zip-slip: strip leading slashes, collapse .., keep posix separators"""
-    name = name.lstrip("/").replace("\\", "/")
-    parts = [p for p in name.split("/") if p not in ("", ".", "..")]
-    return posixpath.join(prefix, *parts)
 
-# Column mappings from Ruby code
-NSDE_COLUMN_MAPPING = {
-    "Item Code": "item_code",
-    "NDC11": "ndc_11",
-    "Proprietary Name": "proprietary_name",
-    "Dosage Form": "dosage_form",
-    "Marketing Category": "marketing_category",
-    "Application Number or Citation": "application_number_or_citation",
-    "Product Type": "product_type",
-    "Marketing Start Date": "marketing_start_date",
-    "Marketing End Date": "marketing_end_date",
-    "Billing Unit": "billing_unit",
-    "Inactivation Date": "inactivation_date",
-    "Reactivation Date": "reactivation_date"
-}
 
 try:
     # Step 1: Download and extract using shared utilities
@@ -123,22 +129,12 @@ try:
     row_count = df.count()
     print(f"Loaded {row_count} records")
     
-    # Apply column mapping and transformations
-    df = apply_column_mapping(df, NSDE_COLUMN_MAPPING)
-    
-    print(f"Mapped columns: {df.columns}")
-    
-    # Fix date columns - convert date strings to proper dates using configurable format
-    date_columns = [c for c in df.columns if 'date' in c]  # Avoid shadowing col function
-    print(f"Using date format: {date_format}")
-    for date_col in date_columns:
-        df = df.withColumn(
-            date_col,
-            when(col(date_col).isNull() | (col(date_col) == ""), lit(None))
-            .otherwise(to_date(col(date_col).cast("string"), date_format))
-        )
-    
-    print(f"Fixed date columns: {date_columns}")
+    # Apply column schema (renaming and type casting)
+    if column_schema:
+        df = apply_schema(df, column_schema)
+        print(f"Applied schema, columns: {df.columns}")
+    else:
+        print(f"No schema provided, using raw columns: {df.columns}")
     
     # Add basic metadata (run_id serves as both identifier and timestamp)
     df_bronze = df.withColumn("meta_run_id", lit(run_id))

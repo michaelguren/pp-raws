@@ -2,14 +2,14 @@
 Shared ETL utilities for downloading and extracting files to S3 raw paths
 Used by all bronze Glue jobs for consistent file handling
 """
-import boto3
+import boto3 # type: ignore[import-not-found]
 import urllib.request
 import zipfile
 import tempfile
 import shutil
 import time
 import posixpath
-from botocore.config import Config
+from botocore.config import Config # type: ignore[import-not-found]
 from zipfile import BadZipFile
 from urllib.error import URLError, HTTPError
 

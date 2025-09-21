@@ -160,6 +160,12 @@ class EtlConfig {
         args["--source_url"] = datasetConfig.source_url;
       }
 
+      if (datasetConfig.column_schema) {
+        args["--column_schema"] = JSON.stringify(
+          datasetConfig.column_schema
+        );
+      }
+
       if (datasetConfig.date_format) {
         args["--date_format"] = datasetConfig.date_format;
       }
