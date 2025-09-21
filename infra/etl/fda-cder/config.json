@@ -3,13 +3,132 @@
   "source_url": "https://www.accessdata.fda.gov/cder/ndctext.zip",
   "description": "FDA CDER National Drug Code Directory with Products and Packages",
   "data_size_category": "medium",
-  "date_format": "MM/dd/yyyy",
-  "schedule": {
-    "enabled": false,
-    "expression": "cron(0 6 * * ? *)"
-  },
   "file_table_mapping": {
     "product.txt": "products",
     "package.txt": "packages"
+  },
+  "column_schema": {
+    "products": {
+      "PRODUCTID": {
+        "target_name": "product_id",
+        "type": "string"
+      },
+      "PRODUCTNDC": {
+        "target_name": "product_ndc",
+        "type": "string"
+      },
+      "PRODUCTTYPENAME": {
+        "target_name": "product_type_name",
+        "type": "string"
+      },
+      "PROPRIETARYNAME": {
+        "target_name": "proprietary_name",
+        "type": "string"
+      },
+      "NONPROPRIETARYNAME": {
+        "target_name": "non_proprietary_name",
+        "type": "string"
+      },
+      "DOSAGEFORMNAME": {
+        "target_name": "dosage_form_name",
+        "type": "string"
+      },
+      "ROUTENAME": {
+        "target_name": "route_name",
+        "type": "string"
+      },
+      "STARTMARKETINGDATE": {
+        "target_name": "start_marketing_date",
+        "type": "date",
+        "format": "MM/dd/yyyy"
+      },
+      "ENDMARKETINGDATE": {
+        "target_name": "end_marketing_date",
+        "type": "date",
+        "format": "MM/dd/yyyy"
+      },
+      "MARKETINGCATEGORYNAME": {
+        "target_name": "marketing_category_name",
+        "type": "string"
+      },
+      "APPLICATIONNUMBER": {
+        "target_name": "application_number",
+        "type": "string"
+      },
+      "LABELERNAME": {
+        "target_name": "labeler_name",
+        "type": "string"
+      },
+      "SUBSTANCENAME": {
+        "target_name": "substance_name",
+        "type": "string"
+      },
+      "ACTIVE_NUMERATOR_STRENGTH": {
+        "target_name": "active_numerator_strength",
+        "type": "string"
+      },
+      "ACTIVE_INGRED_UNIT": {
+        "target_name": "active_ingredient_unit",
+        "type": "string"
+      },
+      "PHARM_CLASSES": {
+        "target_name": "pharm_class",
+        "type": "string"
+      },
+      "DEASCHEDULE": {
+        "target_name": "dea_schedule",
+        "type": "string"
+      },
+      "NDC_EXCLUDE_FLAG": {
+        "target_name": "ndc_exclude_flag",
+        "type": "string"
+      },
+      "LISTING_RECORD_CERTIFIED_THROUGH": {
+        "target_name": "listing_record_certified_through",
+        "type": "date",
+        "format": "MM/dd/yyyy"
+      }
+    },
+    "packages": {
+      "PRODUCTID": {
+        "target_name": "product_id",
+        "type": "string"
+      },
+      "PRODUCTNDC": {
+        "target_name": "product_ndc",
+        "type": "string"
+      },
+      "NDCPACKAGECODE": {
+        "target_name": "ndc_package_code",
+        "type": "string"
+      },
+      "PACKAGEDESCRIPTION": {
+        "target_name": "package_description",
+        "type": "string"
+      },
+      "STARTMARKETINGDATE": {
+        "target_name": "start_marketing_date",
+        "type": "date",
+        "format": "MM/dd/yyyy"
+      },
+      "ENDMARKETINGDATE": {
+        "target_name": "end_marketing_date",
+        "type": "date",
+        "format": "MM/dd/yyyy"
+      },
+      "NDC_EXCLUDE_FLAG": {
+        "target_name": "ndc_exclude_flag",
+        "type": "string"
+      },
+      "LISTING_RECORD_CERTIFIED_THROUGH": {
+        "target_name": "listing_record_certified_through",
+        "type": "date",
+        "format": "MM/dd/yyyy"
+      }
+    }
+  },
+  "schedule": {
+    "enabled": false,
+    "expression": "cron(0 6 * * ? *)"
   }
 }

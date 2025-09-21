@@ -59,7 +59,7 @@ raw_prefix = raw_path_parts[1] if len(raw_path_parts) > 1 else ''
 sys.path.append('/tmp')
 s3_client = boto3.client('s3')
 s3_client.download_file(raw_bucket, 'etl/util-runtime/etl_utils.py', '/tmp/etl_utils.py')
-from etl_utils import download_and_extract
+from etl_utils import download_and_extract  # type: ignore[import-not-found]
 
 print(f"Starting Complete ETL for {dataset} (download + transform)")
 print(f"Source URL: {source_url}")

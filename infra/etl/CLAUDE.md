@@ -110,6 +110,7 @@ For datasets containing multiple files (e.g., zip with product.txt + package.txt
 **EtlConfig Class:**
 Use the centralized `EtlConfig.js` class for all configuration and helper methods:
 
+**Single-Table Datasets:**
 ```javascript
 const etlConfig = require("../util-deploytime/EtlConfig");
 const datasetConfig = require("./config.json");
@@ -118,20 +119,39 @@ const datasetConfig = require("./config.json");
 const databases = etlConfig.getDatabaseNames();
 const resourceNames = etlConfig.getResourceNames(dataset);
 const paths = etlConfig.getS3Paths(bucketName, dataset);
-const workerConfig = etlConfig.getWorkerConfig(
-  datasetConfig.data_size_category
-);
+const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
+```
+
+**Multi-Table Datasets:**
+```javascript
+const etlConfig = require("../util-deploytime/EtlConfig");
+const datasetConfig = require("./config.json");
+const dataset = datasetConfig.dataset;
+
+// Extract table names from file_table_mapping
+const tables = Object.values(datasetConfig.file_table_mapping); // ['products', 'packages']
+
+// Get all computed values with tables option
+const databases = etlConfig.getDatabaseNames();
+const resourceNames = etlConfig.getResourceNames(dataset, { tables });
+const paths = etlConfig.getS3Paths(bucketName, dataset, { tables });
+const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
 ```
 
 **EtlConfig Methods:**
 
 - `getDatabaseNames()` - returns `{bronze, gold}` database names
 - `getResourceNames(dataset, options)` - generates job/crawler names
-- `getS3Paths(bucketName, dataset, options)` - returns all standard S3 paths as **complete S3 URLs** (e.g., `s3://bucket/raw/dataset/`)
+  - Single-table: `{ bronzeJob, bronzeCrawler, goldJob, goldCrawler }`
+  - Multi-table: Also includes `{ bronzeProductsCrawler, bronzePackagesCrawler }` etc.
+- `getS3Paths(bucketName, dataset, options)` - returns all standard S3 paths as **complete S3 URLs**
+  - Single-table: `{ raw, bronze, gold, scripts, scriptLocation }`
+  - Multi-table: Also includes `{ bronzeTables: { products: "s3://...", packages: "s3://..." } }`
 - `getWorkerConfig(sizeCategory)` - validates and returns worker configuration
 - `getGlueJobArguments(options)` - builds complete job arguments including:
   - S3 URLs directly from `getS3Paths()` without modification
   - `column_schema` for schema-driven transformations
+  - **Multi-table jobs need additional path arguments (see below)**
 
 **Path Computation (Convention-based):**
 
@@ -151,6 +171,56 @@ const scriptLocation =
 
 // Database names computed from prefix
 const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
+```
+
+**Multi-Table Glue Job Arguments:**
+Multi-table datasets require additional S3 path arguments for each table:
+
+```javascript
+// Bronze Glue job for multi-table processing
+new glue.CfnJob(this, "BronzeJob", {
+  name: resourceNames.bronzeJob,
+  role: glueRole.roleArn,
+  command: {
+    name: "glueetl",
+    scriptLocation: paths.scriptLocation.bronze,
+    pythonVersion: etlConfig.glue_defaults.python_version,
+  },
+  glueVersion: etlConfig.glue_defaults.version,
+  workerType: workerConfig.worker_type,
+  numberOfWorkers: workerConfig.number_of_workers,
+  maxRetries: etlConfig.glue_defaults.max_retries,
+  timeout: etlConfig.glue_defaults.timeout_minutes,
+  defaultArguments: {
+    ...etlConfig.getGlueJobArguments({
+      dataset,
+      bucketName,
+      datasetConfig,
+      layer: 'bronze'
+    }),
+    // ✅ CRITICAL: Multi-table jobs need individual table paths
+    "--bronze_products_path": paths.bronzeTables.products,
+    "--bronze_packages_path": paths.bronzeTables.packages,
+  },
+});
+```
+
+**Multi-Table Crawler Configuration:**
+Use `paths.bronzeTables.tableName` for crawler targets:
+
+```javascript
+// ✅ Correct multi-table crawler path
+new glue.CfnCrawler(this, "BronzeProductsCrawler", {
+  name: resourceNames.bronzeProductsCrawler,
+  role: glueRole.roleArn,
+  databaseName: databases.bronze,
+  targets: {
+    s3Targets: [{
+      path: paths.bronzeTables.products  // NOT paths.bronze.products
+    }]
+  },
+  // ... configuration
+});
 ```
 
 **Python - Runtime Utilities and File Handling:**
