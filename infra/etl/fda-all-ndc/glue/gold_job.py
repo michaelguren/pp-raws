@@ -13,7 +13,7 @@ from pyspark.sql.functions import lit, col, when, substring, expr  # type: ignor
 
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
-    'JOB_NAME', 'bucket_name', 'dataset',
+    'JOB_NAME', 'dataset',
     'bronze_database', 'gold_database', 'gold_base_path',
     'compression_codec', 'crawler_name'
 ])
@@ -34,7 +34,6 @@ from datetime import datetime
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # Get configuration from job arguments
-bucket_name = args['bucket_name']
 dataset = args['dataset']
 bronze_database = args['bronze_database']
 gold_database = args['gold_database']

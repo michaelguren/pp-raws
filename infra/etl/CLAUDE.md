@@ -35,6 +35,11 @@ EventBridge → Glue Job → S3 (Raw + Bronze) → Crawler → Athena
 - `dataset`: Name used in paths and resources
 - `data_size_category`: Determines worker allocation (small/medium/large/xlarge)
 - `source_url` or `api_endpoints`: Data source configuration
+- `date_format`: Date parsing format (e.g., "yyyyMMdd")
+- `raw_files`: File handling configuration:
+  - `source_filename`: Name for downloaded source file (e.g., "source.zip")
+  - `extracted_file_extensions`: Array of file types to extract (e.g., [".csv"])
+  - `file_count_expected`: Expected number of files (for validation)
 
 ## Naming Conventions
 
@@ -75,13 +80,19 @@ For datasets containing multiple files (e.g., zip with product.txt + package.txt
 - Bronze: `etl/{dataset}/glue/bronze_job.py`
 - Gold: `etl/{dataset}/glue/gold_job.py`
 
+**Shared Code Organization:**
+- `util-deploytime/` - Deploy-time utilities (used by CDK during deployment)
+  - `EtlConfig.js` - Shared configuration methods and helpers
+- `util-runtime/` - Runtime utilities (deployed to S3, used by Glue jobs)
+  - `etl_utils.py` - Shared download, extraction, and file handling functions
+
 ## Stack Implementation Patterns
 
 **EtlConfig Class:**
 Use the centralized `EtlConfig.js` class for all configuration and helper methods:
 
 ```javascript
-const etlConfig = require("../EtlConfig");
+const etlConfig = require("../util-deploytime/EtlConfig");
 const datasetConfig = require("./config.json");
 
 // Get all computed values from EtlConfig methods
@@ -94,9 +105,9 @@ const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category)
 **EtlConfig Methods:**
 - `getDatabaseNames()` - returns `{bronze, gold}` database names
 - `getResourceNames(dataset, options)` - generates job/crawler names
-- `getS3Paths(bucketName, dataset, options)` - returns all standard S3 URLs
+- `getS3Paths(bucketName, dataset, options)` - returns all standard S3 paths as **complete S3 URLs** (e.g., `s3://bucket/raw/dataset/`)
 - `getWorkerConfig(sizeCategory)` - validates and returns worker configuration
-- `getGlueJobArguments(options)` - builds complete job arguments for bronze/gold layers
+- `getGlueJobArguments(options)` - builds complete job arguments, passing S3 URLs directly from `getS3Paths()` without modification
 
 **Path Computation (Convention-based):**
 ```javascript
@@ -114,17 +125,33 @@ const scriptLocation = `s3://${bucketName}/` + path.posix.join("etl", dataset, "
 const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
 ```
 
-**Python - No Path Construction Needed:**
+**Python - Runtime Utilities and File Handling:**
 ```python
+import json
 import posixpath
 
-# ✅ Stack passes complete S3 URLs - no construction needed!
-raw_base_path = args['raw_path']      # "s3://bucket/raw/dataset/"
-bronze_s3_path = args['bronze_path']  # "s3://bucket/bronze/dataset/"
+# ✅ Load shared runtime utilities
+sys.path.append('/tmp')
+s3_client = boto3.client('s3')
+s3_client.download_file(raw_bucket, 'etl/util-runtime/etl_utils.py', '/tmp/etl_utils.py')
+from etl_utils import download_and_extract
 
-# ✅ When appending segments to S3 URLs, use posixpath
+# ✅ Stack passes complete S3 URLs directly from getS3Paths()
+raw_base_path = args['raw_path']      # "s3://bucket/raw/dataset/" - full URL from stack
+bronze_s3_path = args['bronze_path']  # "s3://bucket/bronze/dataset/" - full URL from stack
+file_table_mapping = json.loads(args['file_table_mapping'])
+
+# ✅ Append run_id to raw path for lineage tracking
 scheme, path = raw_base_path.rstrip('/').split('://', 1)
 raw_s3_path = f"{scheme}://{posixpath.join(path, f'run_id={run_id}')}/"
+
+# ✅ Use shared utilities for download and extraction
+result = download_and_extract(source_url, raw_s3_path, file_table_mapping)
+csv_count = result["files_extracted"]
+
+# ✅ Read specific files using posixpath
+csv_filename = list(file_table_mapping.keys())[0]
+csv_file_path = posixpath.join(raw_s3_path, csv_filename)
 ```
 
 **IAM Role Strategy:**
@@ -140,15 +167,15 @@ raw_s3_path = f"{scheme}://{posixpath.join(path, f'run_id={run_id}')}/"
 ## Data Processing Patterns
 
 **Bronze Layer:**
-- Download source data → Save to S3 raw
+- Download source data → Extract and save files to S3 raw (original archives discarded)
 - Transform: Clean columns, type data, add `meta_run_id`
 - Output: Parquet with ZSTD compression
 - Kill-and-fill approach (complete overwrite)
 
 **Glue Job Best Practices:**
-- Use `tempfile.NamedTemporaryFile()` for downloads
-- Stream to S3 with `s3_client.upload_fileobj()` (never load entire files in memory)
-- Include retry logic with exponential backoff
+- Use shared `etl_utils.download_and_extract()` for all file operations
+- Leverage `file_table_mapping` for explicit file-to-table relationships
+- Use `posixpath.join()` for safe S3 path construction
 - Read data from S3 paths with Spark, never local filesystem
 
 **Spark Configuration:**
@@ -170,9 +197,9 @@ spark.conf.set("spark.sql.parquet.summary.metadata.level", "ALL")
 
 ## Adding New Datasets
 
-1. **Create dataset config**: `{dataset}/config.json`
-2. **Create Glue job**: `{dataset}/glue/bronze_job.py`
-3. **Create dataset stack**: `{dataset}/{Dataset}Stack.js`
+1. **Create dataset config**: `{dataset}/config.json` with `file_table_mapping`
+2. **Create Glue job**: `{dataset}/glue/bronze_job.py` using `etl_utils.download_and_extract()`
+3. **Create dataset stack**: `{dataset}/{Dataset}Stack.js` importing from `util-deploytime/EtlConfig`
 4. **Update index.js**: Add stack with dependency on EtlCoreStack
 5. **Deploy**: `cdk deploy --all`
 

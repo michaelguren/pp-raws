@@ -4,9 +4,7 @@ Downloads FDA data, saves raw files for lineage, transforms to Bronze layer
 """
 import sys
 import boto3  # type: ignore[import-not-found]
-import urllib.request
-import zipfile
-from io import BytesIO
+import posixpath
 from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
@@ -17,7 +15,7 @@ from pyspark.sql.functions import lit, col, when, to_date  # type: ignore[import
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'dataset',
     'source_url', 'bronze_database', 'raw_path', 'bronze_path',
-    'date_format', 'compression_codec'
+    'date_format', 'compression_codec', 'file_table_mapping'
 ])
 
 # Initialize Glue
@@ -36,20 +34,32 @@ from datetime import datetime
 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")  # Format: 20240311_143022
 
 # Get configuration from job arguments
+import json
 dataset = args['dataset']
 source_url = args['source_url']
 bronze_database = args['bronze_database']
 date_format = args['date_format']
+file_table_mapping = json.loads(args['file_table_mapping'])
 
-# Use complete S3 URLs from stack (no path construction needed!)
+# S3 paths are already complete URLs from stack
 import posixpath
-
 raw_base_path = args['raw_path']
 bronze_s3_path = args['bronze_path']
 
-# Add run_id to raw path using posixpath
+# Append run_id to raw path
 scheme, path = raw_base_path.rstrip('/').split('://', 1)
 raw_s3_path = f"{scheme}://{posixpath.join(path, f'run_id={run_id}')}/"
+
+# Extract bucket and key components from raw S3 path
+raw_path_parts = raw_s3_path.replace('s3://', '').split('/', 1)
+raw_bucket = raw_path_parts[0]
+raw_prefix = raw_path_parts[1] if len(raw_path_parts) > 1 else ''
+
+# Load shared ETL utilities
+sys.path.append('/tmp')
+s3_client = boto3.client('s3')
+s3_client.download_file(raw_bucket, 'etl/util-runtime/etl_utils.py', '/tmp/etl_utils.py')
+from etl_utils import download_and_extract
 
 print(f"Starting Complete ETL for {dataset} (download + transform)")
 print(f"Source URL: {source_url}")
@@ -66,6 +76,12 @@ def apply_column_mapping(df, column_mapping):
         if old_col in df.columns:
             df = df.withColumnRenamed(old_col, new_col)
     return df
+
+def safe_key(prefix, name):
+    """Prevent zip-slip: strip leading slashes, collapse .., keep posix separators"""
+    name = name.lstrip("/").replace("\\", "/")
+    parts = [p for p in name.split("/") if p not in ("", ".", "..")]
+    return posixpath.join(prefix, *parts)
 
 # Column mappings from Ruby code
 NSDE_COLUMN_MAPPING = {
@@ -84,94 +100,28 @@ NSDE_COLUMN_MAPPING = {
 }
 
 try:
-    # Step 1: Memory-efficient download and extraction using temporary file
+    # Step 1: Download and extract using shared utilities
     print(f"Downloading from: {source_url}")
 
-    s3_client = boto3.client('s3')
-
-    # Extract bucket and key from complete S3 URL
-    import re
-    bucket_name = re.match(r's3://([^/]+)/', raw_base_path).group(1)
-    raw_key_prefix = raw_base_path.replace(f's3://{bucket_name}/', '')
-    zip_key = f"{raw_key_prefix}run_id={run_id}/source.zip"
-
-    import tempfile
-    import shutil
-    from urllib.error import URLError, HTTPError
-    import time
-
-    max_retries = 3
-    content_length = None
-
-    for attempt in range(max_retries):
-        try:
-            print(f"Download attempt {attempt + 1}/{max_retries}")
-
-            with tempfile.NamedTemporaryFile(suffix='.zip', delete=True) as tmp_file:
-                # Stream download to temporary file
-                with urllib.request.urlopen(source_url, timeout=300) as response:
-                    # Get content length if available
-                    content_length = response.headers.get('Content-Length')
-                    if content_length:
-                        print(f"File size: {int(content_length):,} bytes")
-
-                    # Stream to temp file in chunks (memory efficient)
-                    shutil.copyfileobj(response, tmp_file)
-                    tmp_file.flush()
-
-                print(f"Downloaded to temporary file")
-
-                # Upload original zip to S3 for lineage
-                tmp_file.seek(0)
-                s3_client.upload_fileobj(tmp_file, bucket_name, zip_key)
-                print(f"Uploaded original zip to: s3://{bucket_name}/{zip_key}")
-
-                # Extract CSV files and upload to S3
-                tmp_file.seek(0)
-                csv_count = 0
-
-                with zipfile.ZipFile(tmp_file, 'r') as zip_ref:
-                    for file_info in zip_ref.infolist():
-                        if not file_info.is_dir() and file_info.filename.lower().endswith('.csv'):
-                            # Stream each CSV file from zip to S3
-                            with zip_ref.open(file_info) as csv_file:
-                                csv_key = f"{raw_key_prefix}run_id={run_id}/{file_info.filename}"
-
-                                s3_client.upload_fileobj(
-                                    csv_file,
-                                    bucket_name,
-                                    csv_key
-                                )
-                                print(f"Extracted CSV: {file_info.filename}")
-                                csv_count += 1
-
-                print(f"Successfully extracted and uploaded {csv_count} CSV files")
-                break  # Success, exit retry loop
-
-        except (URLError, HTTPError) as e:
-            print(f"Network error on attempt {attempt + 1}: {e}")
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt  # Exponential backoff
-                print(f"Waiting {wait_time} seconds before retry...")
-                time.sleep(wait_time)
-            else:
-                raise
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            raise
+    result = download_and_extract(source_url, raw_s3_path, file_table_mapping)
+    csv_count = result["files_extracted"]
+    content_length = result["content_length"]
     
-    # Step 2: Read CSV files from raw path for transformation
-    print(f"Reading CSV from: {raw_s3_path}*.csv")
+    # Step 2: Read specific CSV file from raw path for transformation
+    csv_filename = list(file_table_mapping.keys())[0]  # "Comprehensive_NDC_SPL_Data_Elements_File.csv"
+    csv_file_path = posixpath.join(raw_s3_path, csv_filename)
+    print(f"Reading CSV file: {csv_file_path}")
 
     df = spark.read.option("header", "true") \
                    .option("inferSchema", "true") \
-                   .csv(f"{raw_s3_path}*.csv")
-    
+                   .csv(csv_file_path)
+
+    # Quick emptiness check before full count
+    if not df.head(1):
+        raise ValueError(f"No data found in file: {csv_file_path}")
+
     row_count = df.count()
     print(f"Loaded {row_count} records")
-    
-    if row_count == 0:
-        raise ValueError("No data found in CSV files")
     
     # Apply column mapping and transformations
     df = apply_column_mapping(df, NSDE_COLUMN_MAPPING)
@@ -179,12 +129,12 @@ try:
     print(f"Mapped columns: {df.columns}")
     
     # Fix date columns - convert date strings to proper dates using configurable format
-    date_columns = [col for col in df.columns if 'date' in col]
+    date_columns = [c for c in df.columns if 'date' in c]  # Avoid shadowing col function
     print(f"Using date format: {date_format}")
     for date_col in date_columns:
         df = df.withColumn(
-            date_col, 
-            when(col(date_col).isNull() | (col(date_col) == ""), None)
+            date_col,
+            when(col(date_col).isNull() | (col(date_col) == ""), lit(None))
             .otherwise(to_date(col(date_col).cast("string"), date_format))
         )
     
@@ -205,7 +155,7 @@ try:
     
     print(f"Complete ETL finished successfully:")
     print(f"  - Downloaded: {content_length or 'unknown'} bytes")
-    print(f"  - Raw files: {csv_count} CSVs saved")
+    print(f"  - Raw files: {csv_count} files saved")
     print(f"  - Bronze records: {row_count} processed")
     print("Note: Run crawler manually via console if schema changes are needed")
 

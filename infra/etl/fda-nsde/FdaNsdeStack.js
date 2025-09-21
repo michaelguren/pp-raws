@@ -12,7 +12,7 @@ class FdaNsdeStack extends cdk.Stack {
     const bucketName = dataWarehouseBucket.bucketName;
 
     // Load configurations
-    const etlConfig = require("../EtlConfig");
+    const etlConfig = require("../util-deploytime/EtlConfig");
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
 
@@ -27,6 +27,13 @@ class FdaNsdeStack extends cdk.Stack {
       sources: [s3deploy.Source.asset(path.join(__dirname, "glue"))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: path.posix.join("etl", dataset, "glue") + "/",
+    });
+
+    // Deploy shared runtime utilities to S3
+    new s3deploy.BucketDeployment(this, "RuntimeUtils", {
+      sources: [s3deploy.Source.asset(path.join(__dirname, "..", "util-runtime"))],
+      destinationBucket: dataWarehouseBucket,
+      destinationKeyPrefix: "etl/util-runtime/",
     });
 
     // Bronze Glue job

@@ -4,7 +4,6 @@
   "data_size_category": "medium",
   "layer": "gold",
   "source_datasets": ["fda-nsde", "fda-cder"],
-  "business_key": "fda_ndc_11",
   "schedule": {
     "enabled": false,
     "expression": "cron(0 8 * * ? *)",
