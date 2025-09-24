@@ -51,22 +51,19 @@ class EtlDeployUtils {
     };
   }
 
-  // Database name helpers
-  getDatabaseNames() {
-    return {
-      bronze: `${this.database_prefix}_bronze`,
-      silver: `${this.database_prefix}_silver`,
-      gold: `${this.database_prefix}_gold`,
-    };
-  }
-
-  // Resource naming helpers
+  // Resource naming helpers (includes all resource names: jobs, crawlers, databases)
   getResourceNames(dataset, tables) {
     const base = this.etl_resource_prefix;
     const names = {
+      // Database names
+      bronzeDatabase: `${this.database_prefix}_bronze`,
+      silverDatabase: `${this.database_prefix}_silver`,
+      goldDatabase: `${this.database_prefix}_gold`,
+      // Job names
       bronzeJob: `${base}-bronze-${dataset}`,
       silverJob: `${base}-silver-${dataset}`,
       goldJob: `${base}-gold-${dataset}`,
+      // Crawler names
       goldCrawler: `${base}-gold-${dataset}-crawler`,
     };
 
@@ -157,7 +154,7 @@ class EtlDeployUtils {
   getGlueJobArguments(options = {}) {
     const { dataset, bucketName, datasetConfig, layer = "bronze", tables } = options;
 
-    const databases = this.getDatabaseNames();
+    const resourceNames = this.getResourceNames(dataset, tables);
     const paths = this.getS3Paths(bucketName, dataset, tables);
 
     const args = {
@@ -168,7 +165,7 @@ class EtlDeployUtils {
 
     // Bronze layer arguments
     if (layer === "bronze") {
-      args["--bronze_database"] = databases.bronze;
+      args["--bronze_database"] = resourceNames.bronzeDatabase;
       args["--raw_path"] = paths.raw;
       args["--bronze_path"] = paths.bronze;
 
@@ -197,8 +194,8 @@ class EtlDeployUtils {
 
     // Gold layer arguments
     if (layer === "gold") {
-      args["--bronze_database"] = databases.bronze;
-      args["--gold_database"] = databases.gold;
+      args["--bronze_database"] = resourceNames.bronzeDatabase;
+      args["--gold_database"] = resourceNames.goldDatabase;
       args["--gold_base_path"] = paths.gold;
     }
 

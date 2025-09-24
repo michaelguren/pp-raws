@@ -11,7 +11,6 @@ class FdaNsdeStack extends cdk.Stack {
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
 
-    const databases = deployUtils.getDatabaseNames();
     const tables = Object.values(datasetConfig.file_table_mapping);
     const resourceNames = deployUtils.getResourceNames(dataset, tables);
     const paths = deployUtils.getS3Paths(bucketName, dataset, tables);
@@ -34,7 +33,7 @@ class FdaNsdeStack extends cdk.Stack {
     );
 
     // Bronze crawler
-    deployUtils.createBronzeCrawler(this, resourceNames.bronzeCrawler, glueRole, paths.bronze, databases.bronze);
+    deployUtils.createBronzeCrawler(this, resourceNames.bronzeCrawler, glueRole, paths.bronze, resourceNames.bronzeDatabase);
 
     // Outputs
     new cdk.CfnOutput(this, "BronzeJobName", {
