@@ -205,6 +205,29 @@ class EtlConfig {
     return args;
   }
 
+  // Create standardized Glue job
+  createGlueJob(scope, jobName, glueRole, scriptLocation, workerConfig, jobArguments, layer = "bronze") {
+    const glue = require("aws-cdk-lib/aws-glue");
+
+    const constructId = layer === "bronze" ? "BronzeJob" : "GoldJob";
+
+    return new glue.CfnJob(scope, constructId, {
+      name: jobName,
+      role: glueRole.roleArn,
+      command: {
+        name: "glueetl",
+        scriptLocation: scriptLocation,
+        pythonVersion: this.glue_defaults.python_version,
+      },
+      glueVersion: this.glue_defaults.version,
+      workerType: workerConfig.worker_type,
+      numberOfWorkers: workerConfig.number_of_workers,
+      maxRetries: this.glue_defaults.max_retries,
+      timeout: this.glue_defaults.timeout_minutes,
+      defaultArguments: jobArguments,
+    });
+  }
+
   // Create standardized bronze crawler
   createBronzeCrawler(scope, resourceName, glueRole, targetPath, databaseName) {
     const glue = require("aws-cdk-lib/aws-glue");

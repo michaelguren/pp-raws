@@ -1,5 +1,4 @@
 const cdk = require("aws-cdk-lib");
-const glue = require("aws-cdk-lib/aws-glue");
 
 class FdaNsdeStack extends cdk.Stack {
   constructor(scope, id, props) {
@@ -19,27 +18,20 @@ class FdaNsdeStack extends cdk.Stack {
     const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
 
     // Bronze job using shared HTTP/ZIP processor
-    new glue.CfnJob(this, "BronzeJob", {
-      name: resourceNames.bronzeJob,
-      role: glueRole.roleArn,
-      command: {
-        name: "glueetl",
-        scriptLocation: `s3://${bucketName}/etl/utils-runtime/https_zip/bronze_http_job.py`,
-        pythonVersion: etlConfig.glue_defaults.python_version,
-      },
-      glueVersion: etlConfig.glue_defaults.version,
-      workerType: workerConfig.worker_type,
-      numberOfWorkers: workerConfig.number_of_workers,
-      maxRetries: etlConfig.glue_defaults.max_retries,
-      timeout: etlConfig.glue_defaults.timeout_minutes,
-      defaultArguments: etlConfig.getGlueJobArguments({
+    etlConfig.createGlueJob(
+      this,
+      resourceNames.bronzeJob,
+      glueRole,
+      `s3://${bucketName}/etl/utils-runtime/https_zip/bronze_http_job.py`,
+      workerConfig,
+      etlConfig.getGlueJobArguments({
         dataset,
         bucketName,
         datasetConfig,
         layer: 'bronze',
         tables
-      }),
-    });
+      })
+    );
 
     // Bronze crawler
     etlConfig.createBronzeCrawler(this, resourceNames.bronzeCrawler, glueRole, paths.bronze, databases.bronze);
