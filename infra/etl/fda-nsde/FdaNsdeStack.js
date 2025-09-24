@@ -7,24 +7,24 @@ class FdaNsdeStack extends cdk.Stack {
     const { dataWarehouseBucket, glueRole } = props.etlCoreStack;
     const bucketName = dataWarehouseBucket.bucketName;
 
-    const etlConfig = require("../utils-deploytime/EtlConfig");
+    const deployUtils = require("../utils-deploytime");
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
 
-    const databases = etlConfig.getDatabaseNames();
+    const databases = deployUtils.getDatabaseNames();
     const tables = Object.values(datasetConfig.file_table_mapping);
-    const resourceNames = etlConfig.getResourceNames(dataset, tables);
-    const paths = etlConfig.getS3Paths(bucketName, dataset, tables);
-    const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
+    const resourceNames = deployUtils.getResourceNames(dataset, tables);
+    const paths = deployUtils.getS3Paths(bucketName, dataset, tables);
+    const workerConfig = deployUtils.getWorkerConfig(datasetConfig.data_size_category);
 
     // Bronze job using shared HTTP/ZIP processor
-    etlConfig.createGlueJob(
+    deployUtils.createGlueJob(
       this,
       resourceNames.bronzeJob,
       glueRole,
       `s3://${bucketName}/etl/utils-runtime/https_zip/bronze_http_job.py`,
       workerConfig,
-      etlConfig.getGlueJobArguments({
+      deployUtils.getGlueJobArguments({
         dataset,
         bucketName,
         datasetConfig,
@@ -34,7 +34,7 @@ class FdaNsdeStack extends cdk.Stack {
     );
 
     // Bronze crawler
-    etlConfig.createBronzeCrawler(this, resourceNames.bronzeCrawler, glueRole, paths.bronze, databases.bronze);
+    deployUtils.createBronzeCrawler(this, resourceNames.bronzeCrawler, glueRole, paths.bronze, databases.bronze);
 
     // Outputs
     new cdk.CfnOutput(this, "BronzeJobName", {

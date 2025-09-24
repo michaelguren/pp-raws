@@ -102,7 +102,7 @@ For datasets containing multiple files (e.g., zip with product.txt + package.txt
 **Shared Code Organization:**
 
 - `utils-deploytime/` - Deploy-time utilities (used by CDK during deployment)
-  - `EtlConfig.js` - Shared configuration methods and helpers
+  - `index.js` - Shared configuration, factory methods, and helpers
 - `utils-runtime/` - Runtime utilities (deployed to S3, used by Glue jobs)
   - `https_zip/` - Shared bronze job and utilities for HTTP/ZIP data sources
     - `bronze_http_job.py` - Complete shared bronze job (download, extract, transform, write to S3)
@@ -110,38 +110,27 @@ For datasets containing multiple files (e.g., zip with product.txt + package.txt
 
 ## Stack Implementation Patterns
 
-**EtlConfig Class:**
-Use the centralized `EtlConfig.js` class for all configuration and helper methods:
+**Deploy Utilities:**
+Use the centralized deploy utilities for all configuration and resource creation:
 
 **Single-Table Datasets:**
 ```javascript
-const etlConfig = require("../utils-deploytime/EtlConfig");
+const deployUtils = require("../utils-deploytime");
 const datasetConfig = require("./config.json");
 
-// Get all computed values from EtlConfig methods
-const databases = etlConfig.getDatabaseNames();
-const resourceNames = etlConfig.getResourceNames(dataset);
-const paths = etlConfig.getS3Paths(bucketName, dataset);
-const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
+// Get all computed values from deploy utility methods
+const databases = deployUtils.getDatabaseNames();
+const tables = Object.values(datasetConfig.file_table_mapping);
+const resourceNames = deployUtils.getResourceNames(dataset, tables);
+const paths = deployUtils.getS3Paths(bucketName, dataset, tables);
+const workerConfig = deployUtils.getWorkerConfig(datasetConfig.data_size_category);
+
+// Create resources using factory methods
+deployUtils.createGlueJob(this, resourceNames.bronzeJob, glueRole, scriptLocation, workerConfig, jobArgs);
+deployUtils.createBronzeCrawler(this, resourceNames.bronzeCrawler, glueRole, paths.bronze, databases.bronze);
 ```
 
-**Multi-Table Datasets:**
-```javascript
-const etlConfig = require("../utils-deploytime/EtlConfig");
-const datasetConfig = require("./config.json");
-const dataset = datasetConfig.dataset;
-
-// Extract table names from file_table_mapping
-const tables = Object.values(datasetConfig.file_table_mapping); // ['products', 'packages']
-
-// Get all computed values with tables option
-const databases = etlConfig.getDatabaseNames();
-const resourceNames = etlConfig.getResourceNames(dataset, { tables });
-const paths = etlConfig.getS3Paths(bucketName, dataset, { tables });
-const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
-```
-
-**EtlConfig Methods:**
+**Deploy Utilities Methods:**
 
 - `getDatabaseNames()` - returns `{bronze, gold}` database names
 - `getResourceNames(dataset, options)` - generates job/crawler names
@@ -294,7 +283,7 @@ spark.conf.set("spark.sql.parquet.summary.metadata.level", "ALL")
 
 1. **Create dataset config**: `{dataset}/config.json` with `file_table_mapping` and `column_schema`
 2. **Create dataset stack**: `{dataset}/{Dataset}Stack.js`:
-   - Import `utils-deploytime/EtlConfig`
+   - Import deploy utilities: `const deployUtils = require("../utils-deploytime")`
    - For HTTP/ZIP sources: Point to shared `utils-runtime/https_zip/bronze_http_job.py`
    - Only create custom bronze job for non-HTTP/ZIP sources
 3. **Update index.js**: Add stack with dependency on EtlCoreStack
