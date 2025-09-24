@@ -9,11 +9,12 @@ import json
 import posixpath
 from datetime import datetime
 import boto3
-from awsglue.utils import getResolvedOptions
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
-from pyspark.sql.functions import lit, col, when, to_date
+# AWS Glue imports - only available in Glue runtime environment
+from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
+from pyspark.context import SparkContext  # type: ignore[import-not-found]
+from awsglue.context import GlueContext  # type: ignore[import-not-found]
+from awsglue.job import Job  # type: ignore[import-not-found]
+from pyspark.sql.functions import lit, col, when, to_date  # type: ignore[import-not-found]
 
 # Required job arguments
 args = getResolvedOptions(sys.argv, [
@@ -60,7 +61,7 @@ raw_bucket = raw_path_parts[0]
 sys.path.append('/tmp')
 s3_client = boto3.client('s3')
 s3_client.download_file(raw_bucket, 'etl/utils-runtime/https_zip/etl_utils.py', '/tmp/etl_utils.py')
-from etl_utils import download_and_extract
+from etl_utils import download_and_extract  # type: ignore[import-not-found]
 
 print(f"Starting Bronze ETL for {dataset}")
 print(f"Source URL: {source_url}")
