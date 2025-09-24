@@ -17,7 +17,7 @@ from pyspark.sql.functions import lit, col, when, to_date
 
 # Required job arguments
 args = getResolvedOptions(sys.argv, [
-    'JOB_NAME', 'bucket_name', 'dataset', 'bronze_database',
+    'JOB_NAME', 'dataset', 'bronze_database',
     'raw_path', 'bronze_path',
     'file_table_mapping', 'column_schema', 'source_url',
     'compression_codec'
@@ -39,7 +39,6 @@ run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # Parse configuration from job arguments
 dataset = args['dataset']
-bucket_name = args['bucket_name']
 source_url = args['source_url']
 bronze_database = args['bronze_database']
 file_table_mapping = json.loads(args['file_table_mapping'])
