@@ -1,6 +1,6 @@
 const path = require("path");
 
-class EtlConfig {
+class EtlDeployUtils {
   constructor() {
     // Core configuration (from original config.json)
     this.etl_resource_prefix = "pp-dw";
@@ -249,4 +249,4 @@ class EtlConfig {
 }
 
 // Export singleton instance
-module.exports = new EtlConfig();
+module.exports = new EtlDeployUtils();

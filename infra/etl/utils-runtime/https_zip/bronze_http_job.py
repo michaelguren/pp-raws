@@ -8,7 +8,7 @@ import sys
 import json
 import posixpath
 from datetime import datetime
-import boto3
+import boto3 # type: ignore[import-not-found]
 # AWS Glue imports - only available in Glue runtime environment
 from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
