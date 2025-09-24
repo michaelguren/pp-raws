@@ -42,19 +42,7 @@ class FdaNsdeStack extends cdk.Stack {
     });
 
     // Bronze crawler
-    new glue.CfnCrawler(this, "BronzeCrawler", {
-      name: resourceNames.bronzeCrawler,
-      role: glueRole.roleArn,
-      databaseName: databases.bronze,
-      targets: { s3Targets: [{ path: paths.bronze }] },
-      configuration: JSON.stringify({
-        Version: 1.0,
-        CrawlerOutput: {
-          Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
-          Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
-        }
-      })
-    });
+    etlConfig.createBronzeCrawler(this, resourceNames.bronzeCrawler, glueRole, paths.bronze, databases.bronze);
 
     // Outputs
     new cdk.CfnOutput(this, "BronzeJobName", {

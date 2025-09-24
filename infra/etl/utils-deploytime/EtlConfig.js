@@ -204,6 +204,25 @@ class EtlConfig {
 
     return args;
   }
+
+  // Create standardized bronze crawler
+  createBronzeCrawler(scope, resourceName, glueRole, targetPath, databaseName) {
+    const glue = require("aws-cdk-lib/aws-glue");
+
+    return new glue.CfnCrawler(scope, "BronzeCrawler", {
+      name: resourceName,
+      role: glueRole.roleArn,
+      databaseName: databaseName,
+      targets: { s3Targets: [{ path: targetPath }] },
+      configuration: JSON.stringify({
+        Version: 1.0,
+        CrawlerOutput: {
+          Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
+          Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
+        }
+      })
+    });
+  }
 }
 
 // Export singleton instance
