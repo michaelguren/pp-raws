@@ -1,6 +1,7 @@
 """
-Shared ETL utilities for downloading and extracting files to S3 raw paths
-Used by all bronze Glue jobs for consistent file handling
+Shared ETL utilities for downloading and extracting ZIP files to S3 raw paths
+Specifically handles HTTP/HTTPS downloads of ZIP archives
+Used by bronze Glue jobs processing ZIP data sources
 """
 import boto3 # type: ignore[import-not-found]
 import urllib.request

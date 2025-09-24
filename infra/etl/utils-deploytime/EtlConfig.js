@@ -55,27 +55,37 @@ class EtlConfig {
   getDatabaseNames() {
     return {
       bronze: `${this.database_prefix}_bronze`,
+      silver: `${this.database_prefix}_silver`,
       gold: `${this.database_prefix}_gold`,
     };
   }
 
   // Resource naming helpers
-  getResourceNames(dataset, options = {}) {
+  getResourceNames(dataset, tables) {
     const base = this.etl_resource_prefix;
     const names = {
       bronzeJob: `${base}-bronze-${dataset}`,
-      bronzeCrawler: `${base}-bronze-${dataset}-crawler`,
+      silverJob: `${base}-silver-${dataset}`,
       goldJob: `${base}-gold-${dataset}`,
       goldCrawler: `${base}-gold-${dataset}-crawler`,
     };
 
-    // Add multi-table crawler names if tables provided
-    if (options.tables) {
-      options.tables.forEach((tableName) => {
-        const capitalized =
-          tableName.charAt(0).toUpperCase() + tableName.slice(1);
+    // Generate crawler names based on number of tables
+    if (tables.length === 1) {
+      // Single table: use dataset name in crawler
+      names.bronzeCrawler = `${base}-bronze-${dataset}-crawler`;
+    } else {
+      // Multiple tables: include table name in each crawler
+      tables.forEach((tableName) => {
+        // Create camelCase key: "fda-products" → "bronzeFdaProductsCrawler"
+        const camelKey = tableName
+          .split("-")
+          .map((part, i) =>
+            i === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1)
+          )
+          .join("");
         names[
-          `bronze${capitalized}Crawler`
+          `bronze${camelKey.charAt(0).toUpperCase() + camelKey.slice(1)}Crawler`
         ] = `${base}-bronze-${dataset}-${tableName}-crawler`;
       });
     }
@@ -89,7 +99,14 @@ class EtlConfig {
   }
 
   // Get all standard S3 paths for a dataset
-  getS3Paths(bucketName, dataset, options = {}) {
+  getS3Paths(bucketName, dataset, tables) {
+    // Validate tables parameter
+    if (!tables || !Array.isArray(tables) || tables.length === 0) {
+      throw new Error(
+        `Tables parameter is required for getS3Paths. Received: ${JSON.stringify(tables)}`
+      );
+    }
+
     const paths = {
       raw: this.s3Path(bucketName, "raw", dataset),
       bronze: this.s3Path(bucketName, "bronze", dataset),
@@ -103,20 +120,19 @@ class EtlConfig {
           `s3://${bucketName}/` +
           path.posix.join("etl", dataset, "glue", "gold_job.py"),
       },
+      bronzeTables: {},
     };
 
-    // Add multi-table bronze paths if tables provided
-    if (options.tables) {
-      paths.bronzeTables = {};
-      options.tables.forEach((tableName) => {
-        paths.bronzeTables[tableName] = this.s3Path(
-          bucketName,
-          "bronze",
-          dataset,
-          tableName
-        );
-      });
-    }
+    // Generate bronze table paths for each table
+    tables.forEach((tableName) => {
+      // Use table name directly as path: bronze/fda-products/, bronze/fda-packages/
+      // This results in table names: fda_products, fda_packages
+      paths.bronzeTables[tableName] = this.s3Path(
+        bucketName,
+        "bronze",
+        tableName
+      );
+    });
 
     return paths;
   }
@@ -139,10 +155,10 @@ class EtlConfig {
 
   // Build Glue job default arguments
   getGlueJobArguments(options = {}) {
-    const { dataset, bucketName, datasetConfig, layer = "bronze" } = options;
+    const { dataset, bucketName, datasetConfig, layer = "bronze", tables } = options;
 
     const databases = this.getDatabaseNames();
-    const paths = this.getS3Paths(bucketName, dataset);
+    const paths = this.getS3Paths(bucketName, dataset, tables);
 
     const args = {
       "--dataset": dataset,
@@ -161,9 +177,7 @@ class EtlConfig {
       }
 
       if (datasetConfig.column_schema) {
-        args["--column_schema"] = JSON.stringify(
-          datasetConfig.column_schema
-        );
+        args["--column_schema"] = JSON.stringify(datasetConfig.column_schema);
       }
 
       if (datasetConfig.date_format) {

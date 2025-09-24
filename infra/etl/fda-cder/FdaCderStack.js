@@ -12,15 +12,15 @@ class FdaCderStack extends cdk.Stack {
     const bucketName = dataWarehouseBucket.bucketName;
 
     // Load configurations
-    const etlConfig = require("../util-deploytime/EtlConfig");
+    const etlConfig = require("../utils-deploytime/EtlConfig");
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
 
     // Get everything from EtlConfig methods
     const databases = etlConfig.getDatabaseNames();
-    const tables = Object.values(datasetConfig.file_table_mapping); // ['products', 'packages']
-    const resourceNames = etlConfig.getResourceNames(dataset, { tables });
-    const paths = etlConfig.getS3Paths(bucketName, dataset, { tables });
+    const tables = Object.values(datasetConfig.file_table_mapping); // ['fda-products', 'fda-packages']
+    const resourceNames = etlConfig.getResourceNames(dataset, tables);
+    const paths = etlConfig.getS3Paths(bucketName, dataset, tables);
     const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
 
     // Deploy Glue scripts to S3
@@ -32,9 +32,9 @@ class FdaCderStack extends cdk.Stack {
 
     // Deploy shared runtime utilities to S3
     new s3deploy.BucketDeployment(this, "RuntimeUtils", {
-      sources: [s3deploy.Source.asset(path.join(__dirname, "..", "util-runtime"))],
+      sources: [s3deploy.Source.asset(path.join(__dirname, "..", "utils-runtime"))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: "etl/util-runtime/",
+      destinationKeyPrefix: "etl/utils-runtime/",
     });
 
     // Bronze Glue job for dual-table processing
@@ -58,9 +58,13 @@ class FdaCderStack extends cdk.Stack {
           datasetConfig,
           layer: 'bronze'
         }),
-        // Multi-table specific paths
-        "--bronze_products_path": paths.bronzeTables.products,
-        "--bronze_packages_path": paths.bronzeTables.packages,
+        // Dynamic multi-table specific paths
+        ...Object.fromEntries(
+          tables.map(tableName => [
+            `--bronze_${tableName.replace('-', '_')}_path`,
+            paths.bronzeTables[tableName]
+          ])
+        ),
       },
     });
 

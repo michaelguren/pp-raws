@@ -12,37 +12,31 @@ class FdaNsdeStack extends cdk.Stack {
     const bucketName = dataWarehouseBucket.bucketName;
 
     // Load configurations
-    const etlConfig = require("../util-deploytime/EtlConfig");
+    const etlConfig = require("../utils-deploytime/EtlConfig");
     const datasetConfig = require("./config.json");
     const dataset = datasetConfig.dataset;
 
     // Get everything from EtlConfig methods
     const databases = etlConfig.getDatabaseNames();
-    const resourceNames = etlConfig.getResourceNames(dataset);
-    const paths = etlConfig.getS3Paths(bucketName, dataset);
+    const tables = Object.values(datasetConfig.file_table_mapping); // ['fda-nsde']
+    const resourceNames = etlConfig.getResourceNames(dataset, tables);
+    const paths = etlConfig.getS3Paths(bucketName, dataset, tables);
     const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
 
-    // Deploy Glue scripts to S3
-    new s3deploy.BucketDeployment(this, "GlueScripts", {
-      sources: [s3deploy.Source.asset(path.join(__dirname, "glue"))],
-      destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: path.posix.join("etl", dataset, "glue") + "/",
-    });
-
-    // Deploy shared runtime utilities to S3
+    // Deploy shared runtime utilities to S3 (includes shared bronze job)
     new s3deploy.BucketDeployment(this, "RuntimeUtils", {
-      sources: [s3deploy.Source.asset(path.join(__dirname, "..", "util-runtime"))],
+      sources: [s3deploy.Source.asset(path.join(__dirname, "..", "utils-runtime"))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: "etl/util-runtime/",
+      destinationKeyPrefix: "etl/utils-runtime/",
     });
 
-    // Bronze Glue job
+    // Bronze Glue job (uses shared HTTP bronze job)
     new glue.CfnJob(this, "BronzeJob", {
       name: resourceNames.bronzeJob,
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: paths.scriptLocation.bronze,
+        scriptLocation: `s3://${bucketName}/etl/utils-runtime/https_zip/bronze_http_job.py`,
         pythonVersion: etlConfig.glue_defaults.python_version,
       },
       glueVersion: etlConfig.glue_defaults.version,
@@ -50,12 +44,23 @@ class FdaNsdeStack extends cdk.Stack {
       numberOfWorkers: workerConfig.number_of_workers,
       maxRetries: etlConfig.glue_defaults.max_retries,
       timeout: etlConfig.glue_defaults.timeout_minutes,
-      defaultArguments: etlConfig.getGlueJobArguments({
-        dataset,
-        bucketName,
-        datasetConfig,
-        layer: 'bronze'
-      }),
+      defaultArguments: {
+        ...etlConfig.getGlueJobArguments({
+          dataset,
+          bucketName,
+          datasetConfig,
+          layer: 'bronze',
+          tables
+        }),
+        "--bucket_name": bucketName,  // Required by shared bronze job
+        // Dynamic multi-table specific paths
+        ...Object.fromEntries(
+          tables.map(tableName => [
+            `--bronze_${tableName.replace('-', '_')}_path`,
+            paths.bronzeTables[tableName]
+          ])
+        ),
+      },
     });
 
 

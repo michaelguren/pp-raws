@@ -4,11 +4,11 @@
   "description": "FDA CDER National Drug Code Directory with Products and Packages",
   "data_size_category": "medium",
   "file_table_mapping": {
-    "product.txt": "products",
-    "package.txt": "packages"
+    "product.txt": "fda-products",
+    "package.txt": "fda-packages"
   },
   "column_schema": {
-    "products": {
+    "fda-products": {
       "PRODUCTID": {
         "target_name": "product_id",
         "type": "string"
@@ -89,7 +89,7 @@
         "format": "MM/dd/yyyy"
       }
     },
-    "packages": {
+    "fda-packages": {
       "PRODUCTID": {
         "target_name": "product_id",
         "type": "string"

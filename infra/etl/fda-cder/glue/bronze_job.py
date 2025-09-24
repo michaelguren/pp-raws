@@ -9,7 +9,7 @@ from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
 from awsglue.job import Job  # type: ignore[import-not-found]
-from pyspark.sql.functions import lit, col, when, to_date, expr, split, lpad, substring  # type: ignore[import-not-found]
+from pyspark.sql.functions import lit, col, when, to_date, expr, split, substring  # type: ignore[import-not-found]
 
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
@@ -58,7 +58,7 @@ raw_prefix = raw_path_parts[1] if len(raw_path_parts) > 1 else ''
 # Load shared ETL utilities
 sys.path.append('/tmp')
 s3_client = boto3.client('s3')
-s3_client.download_file(raw_bucket, 'etl/util-runtime/etl_utils.py', '/tmp/etl_utils.py')
+s3_client.download_file(raw_bucket, 'etl/utils-runtime/https_zip/etl_utils.py', '/tmp/etl_utils.py')
 from etl_utils import download_and_extract  # type: ignore[import-not-found]
 
 print(f"Starting Complete CDER ETL for {dataset} (download + transform dual tables)")
@@ -171,119 +171,74 @@ try:
     files_extracted = result["files_extracted"]
     content_length = result["content_length"]
 
-    # Step 2: Process Products Table
-    print("Processing products table...")
+    # Step 2: Process all tables dynamically
+    total_records_processed = 0
 
-    products_filename = "product.txt"
-    products_s3_path = posixpath.join(raw_s3_path, products_filename)
-    print(f"Reading products from: {products_s3_path}")
+    for source_filename, table_name in file_table_mapping.items():
+        print(f"Processing {table_name} table...")
 
-    df_products = spark.read.option("header", "true") \
-                           .option("inferSchema", "true") \
-                           .option("sep", "\t") \
-                           .csv(products_s3_path)
+        # Read source file
+        source_s3_path = posixpath.join(raw_s3_path, source_filename)
+        print(f"Reading {table_name} from: {source_s3_path}")
 
-    # Quick emptiness check before full count
-    if not df_products.head(1):
-        raise ValueError(f"No data found in products file: {products_s3_path}")
+        df = spark.read.option("header", "true") \
+                      .option("inferSchema", "true") \
+                      .option("sep", "\t") \
+                      .csv(source_s3_path)
 
-    products_row_count = df_products.count()
-    print(f"Loaded {products_row_count} product records")
+        # Quick emptiness check before full count
+        if not df.head(1):
+            raise ValueError(f"No data found in {table_name} file: {source_s3_path}")
 
-    # Apply schema if provided, otherwise use legacy column mapping
-    if column_schema and 'products' in column_schema:
-        df_products = apply_schema(df_products, column_schema['products'])
-        print(f"Applied products schema, columns: {df_products.columns}")
-    else:
-        df_products = apply_column_mapping(df_products, PRODUCTS_COLUMN_MAPPING)
-        # Legacy date handling
-        date_columns = [col_name for col_name in df_products.columns if 'date' in col_name]
-        print(f"Products date columns: {date_columns}")
-        for date_col in date_columns:
-            df_products = df_products.withColumn(
-                date_col,
-                when(col(date_col).isNull() | (col(date_col) == ""), lit(None))
-                .otherwise(to_date(col(date_col).cast("string"), "MM/dd/yyyy"))
-            )
-        print(f"Applied legacy products mapping, columns: {df_products.columns}")
+        row_count = df.count()
+        print(f"Loaded {row_count} {table_name} records")
 
-    # Add formatted NDC columns
-    df_products = add_formatted_ndc_columns_products(df_products)
+        # Apply schema if provided, otherwise use legacy column mapping
+        if column_schema and table_name in column_schema:
+            df = apply_schema(df, column_schema[table_name])
+            print(f"Applied {table_name} schema, columns: {df.columns}")
+        else:
+            # Legacy fallback - determine which mapping to use based on filename
+            if source_filename == "product.txt":
+                df = apply_column_mapping(df, PRODUCTS_COLUMN_MAPPING)
+                df = add_formatted_ndc_columns_products(df)
+            elif source_filename == "package.txt":
+                df = apply_column_mapping(df, PACKAGES_COLUMN_MAPPING)
+                df = add_formatted_ndc_columns_packages(df)
 
-    # Add basic metadata (run_id serves as both identifier and timestamp)
-    df_products_bronze = df_products.withColumn("meta_run_id", lit(run_id))
+            # Legacy date handling
+            date_columns = [col_name for col_name in df.columns if 'date' in col_name]
+            print(f"{table_name} date columns: {date_columns}")
+            for date_col in date_columns:
+                df = df.withColumn(
+                    date_col,
+                    when(col(date_col).isNull() | (col(date_col) == ""), lit(None))
+                    .otherwise(to_date(col(date_col).cast("string"), "MM/dd/yyyy"))
+                )
+            print(f"Applied legacy {table_name} mapping, columns: {df.columns}")
 
-    print(f"Products final columns: {df_products_bronze.columns}")
+        # Add basic metadata (run_id serves as both identifier and timestamp)
+        df_bronze = df.withColumn("meta_run_id", lit(run_id))
 
-    # Write products to bronze layer
-    print(f"Writing products to: {bronze_products_s3_path}")
+        print(f"{table_name} final columns: {df_bronze.columns}")
 
-    df_products_bronze.write \
-                     .mode("overwrite") \
-                     .option("compression", args['compression_codec']) \
-                     .parquet(bronze_products_s3_path)
+        # Get target S3 path - use args parameter that matches table name
+        bronze_table_path = args[f'bronze_{table_name.replace("-", "_")}_path']
+        print(f"Writing {table_name} to: {bronze_table_path}")
 
-    print(f"Successfully processed {products_row_count} product records to bronze layer")
-    
-    # Step 3: Process Packages Table
-    print("Processing packages table...")
+        df_bronze.write \
+                 .mode("overwrite") \
+                 .option("compression", args['compression_codec']) \
+                 .parquet(bronze_table_path)
 
-    packages_filename = "package.txt"
-    packages_s3_path = posixpath.join(raw_s3_path, packages_filename)
-    print(f"Reading packages from: {packages_s3_path}")
-
-    df_packages = spark.read.option("header", "true") \
-                           .option("inferSchema", "true") \
-                           .option("sep", "\t") \
-                           .csv(packages_s3_path)
-
-    # Quick emptiness check before full count
-    if not df_packages.head(1):
-        raise ValueError(f"No data found in packages file: {packages_s3_path}")
-
-    packages_row_count = df_packages.count()
-    print(f"Loaded {packages_row_count} package records")
-
-    # Apply schema if provided, otherwise use legacy column mapping
-    if column_schema and 'packages' in column_schema:
-        df_packages = apply_schema(df_packages, column_schema['packages'])
-        print(f"Applied packages schema, columns: {df_packages.columns}")
-    else:
-        df_packages = apply_column_mapping(df_packages, PACKAGES_COLUMN_MAPPING)
-        # Legacy date handling
-        date_columns = [col_name for col_name in df_packages.columns if 'date' in col_name]
-        print(f"Packages date columns: {date_columns}")
-        for date_col in date_columns:
-            df_packages = df_packages.withColumn(
-                date_col,
-                when(col(date_col).isNull() | (col(date_col) == ""), lit(None))
-                .otherwise(to_date(col(date_col).cast("string"), "MM/dd/yyyy"))
-            )
-        print(f"Applied legacy packages mapping, columns: {df_packages.columns}")
-
-    # Add formatted NDC columns
-    df_packages = add_formatted_ndc_columns_packages(df_packages)
-
-    # Add basic metadata (run_id serves as both identifier and timestamp)
-    df_packages_bronze = df_packages.withColumn("meta_run_id", lit(run_id))
-
-    print(f"Packages final columns: {df_packages_bronze.columns}")
-
-    # Write packages to bronze layer
-    print(f"Writing packages to: {bronze_packages_s3_path}")
-
-    df_packages_bronze.write \
-                     .mode("overwrite") \
-                     .option("compression", args['compression_codec']) \
-                     .parquet(bronze_packages_s3_path)
-
-    print(f"Successfully processed {packages_row_count} package records to bronze layer")
+        print(f"Successfully processed {row_count} {table_name} records to bronze layer")
+        total_records_processed += row_count
     
     print(f"Complete CDER ETL finished successfully:")
     print(f"  - Downloaded: {content_length or 'unknown'} bytes")
     print(f"  - Raw files: {files_extracted} files saved")
-    print(f"  - Products bronze records: {products_row_count} processed")
-    print(f"  - Packages bronze records: {packages_row_count} processed")
+    print(f"  - Total bronze records: {total_records_processed} processed")
+    print(f"  - Tables processed: {', '.join(file_table_mapping.values())}")
     print("Note: Run crawlers manually via console if schema changes are needed")
 
 except Exception as e:

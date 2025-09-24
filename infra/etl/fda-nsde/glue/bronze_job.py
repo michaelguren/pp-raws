@@ -58,7 +58,7 @@ raw_prefix = raw_path_parts[1] if len(raw_path_parts) > 1 else ''
 # Load shared ETL utilities
 sys.path.append('/tmp')
 s3_client = boto3.client('s3')
-s3_client.download_file(raw_bucket, 'etl/util-runtime/etl_utils.py', '/tmp/etl_utils.py')
+s3_client.download_file(raw_bucket, 'etl/utils-runtime/https_zip/etl_utils.py', '/tmp/etl_utils.py')
 from etl_utils import download_and_extract  # type: ignore[import-not-found]
 
 print(f"Starting Complete ETL for {dataset} (download + transform)")
@@ -113,46 +113,55 @@ try:
     csv_count = result["files_extracted"]
     content_length = result["content_length"]
     
-    # Step 2: Read specific CSV file from raw path for transformation
-    csv_filename = list(file_table_mapping.keys())[0]  # "Comprehensive_NDC_SPL_Data_Elements_File.csv"
-    csv_file_path = posixpath.join(raw_s3_path, csv_filename)
-    print(f"Reading CSV file: {csv_file_path}")
+    # Step 2: Process all tables dynamically
+    total_records_processed = 0
 
-    df = spark.read.option("header", "true") \
-                   .option("inferSchema", "true") \
-                   .csv(csv_file_path)
+    for source_filename, table_name in file_table_mapping.items():
+        print(f"Processing {table_name} table...")
 
-    # Quick emptiness check before full count
-    if not df.head(1):
-        raise ValueError(f"No data found in file: {csv_file_path}")
+        # Read source file
+        source_s3_path = posixpath.join(raw_s3_path, source_filename)
+        print(f"Reading {table_name} from: {source_s3_path}")
 
-    row_count = df.count()
-    print(f"Loaded {row_count} records")
-    
-    # Apply column schema (renaming and type casting)
-    if column_schema:
-        df = apply_schema(df, column_schema)
-        print(f"Applied schema, columns: {df.columns}")
-    else:
-        print(f"No schema provided, using raw columns: {df.columns}")
-    
-    # Add basic metadata (run_id serves as both identifier and timestamp)
-    df_bronze = df.withColumn("meta_run_id", lit(run_id))
-    
-    # Write to bronze layer (overwrite for kill-and-fill approach)
-    print(f"Writing to: {bronze_s3_path}")
-    
-    df_bronze.write \
-             .mode("overwrite") \
-             .option("compression", args['compression_codec']) \
-             .parquet(bronze_s3_path)
-    
-    print(f"Successfully processed {row_count} records to bronze layer")
+        df = spark.read.option("header", "true") \
+                      .option("inferSchema", "true") \
+                      .csv(source_s3_path)
+
+        # Quick emptiness check before full count
+        if not df.head(1):
+            raise ValueError(f"No data found in {table_name} file: {source_s3_path}")
+
+        row_count = df.count()
+        print(f"Loaded {row_count} {table_name} records")
+
+        # Apply schema if provided
+        if column_schema:
+            df = apply_schema(df, column_schema)
+            print(f"Applied {table_name} schema, columns: {df.columns}")
+        else:
+            print(f"No schema provided for {table_name}, using raw columns: {df.columns}")
+
+        # Add basic metadata (run_id serves as both identifier and timestamp)
+        df_bronze = df.withColumn("meta_run_id", lit(run_id))
+
+        print(f"{table_name} final columns: {df_bronze.columns}")
+
+        # Write to bronze layer (for single table, use bronze_path directly)
+        print(f"Writing {table_name} to: {bronze_s3_path}")
+
+        df_bronze.write \
+                 .mode("overwrite") \
+                 .option("compression", args['compression_codec']) \
+                 .parquet(bronze_s3_path)
+
+        print(f"Successfully processed {row_count} {table_name} records to bronze layer")
+        total_records_processed += row_count
     
     print(f"Complete ETL finished successfully:")
     print(f"  - Downloaded: {content_length or 'unknown'} bytes")
     print(f"  - Raw files: {csv_count} files saved")
-    print(f"  - Bronze records: {row_count} processed")
+    print(f"  - Total bronze records: {total_records_processed} processed")
+    print(f"  - Tables processed: {', '.join(file_table_mapping.values())}")
     print("Note: Run crawler manually via console if schema changes are needed")
 
 except Exception as e:

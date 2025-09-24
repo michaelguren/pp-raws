@@ -7,57 +7,59 @@
     "Comprehensive_NDC_SPL_Data_Elements_File.csv": "fda-nsde"
   },
   "column_schema": {
-    "Item Code": {
-      "target_name": "item_code",
-      "type": "string"
-    },
-    "NDC11": {
-      "target_name": "ndc_11",
-      "type": "string"
-    },
-    "Proprietary Name": {
-      "target_name": "proprietary_name",
-      "type": "string"
-    },
-    "Dosage Form": {
-      "target_name": "dosage_form",
-      "type": "string"
-    },
-    "Marketing Category": {
-      "target_name": "marketing_category",
-      "type": "string"
-    },
-    "Application Number or Citation": {
-      "target_name": "application_number_or_citation",
-      "type": "string"
-    },
-    "Product Type": {
-      "target_name": "product_type",
-      "type": "string"
-    },
-    "Marketing Start Date": {
-      "target_name": "marketing_start_date",
-      "type": "date",
-      "format": "yyyyMMdd"
-    },
-    "Marketing End Date": {
-      "target_name": "marketing_end_date",
-      "type": "date",
-      "format": "yyyyMMdd"
-    },
-    "Billing Unit": {
-      "target_name": "billing_unit",
-      "type": "string"
-    },
-    "Inactivation Date": {
-      "target_name": "inactivation_date",
-      "type": "date",
-      "format": "yyyyMMdd"
-    },
-    "Reactivation Date": {
-      "target_name": "reactivation_date",
-      "type": "date",
-      "format": "yyyyMMdd"
+    "fda-nsde": {
+      "Item Code": {
+        "target_name": "item_code",
+        "type": "string"
+      },
+      "NDC11": {
+        "target_name": "ndc_11",
+        "type": "string"
+      },
+      "Proprietary Name": {
+        "target_name": "proprietary_name",
+        "type": "string"
+      },
+      "Dosage Form": {
+        "target_name": "dosage_form",
+        "type": "string"
+      },
+      "Marketing Category": {
+        "target_name": "marketing_category",
+        "type": "string"
+      },
+      "Application Number or Citation": {
+        "target_name": "application_number_or_citation",
+        "type": "string"
+      },
+      "Product Type": {
+        "target_name": "product_type",
+        "type": "string"
+      },
+      "Marketing Start Date": {
+        "target_name": "marketing_start_date",
+        "type": "date",
+        "format": "yyyyMMdd"
+      },
+      "Marketing End Date": {
+        "target_name": "marketing_end_date",
+        "type": "date",
+        "format": "yyyyMMdd"
+      },
+      "Billing Unit": {
+        "target_name": "billing_unit",
+        "type": "string"
+      },
+      "Inactivation Date": {
+        "target_name": "inactivation_date",
+        "type": "date",
+        "format": "yyyyMMdd"
+      },
+      "Reactivation Date": {
+        "target_name": "reactivation_date",
+        "type": "date",
+        "format": "yyyyMMdd"
+      }
     }
   },
   "schedule": {

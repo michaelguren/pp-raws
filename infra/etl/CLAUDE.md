@@ -93,17 +93,20 @@ For datasets containing multiple files (e.g., zip with product.txt + package.txt
   }
   ```
 
-**Glue Script Conventions:**
+**Glue Script Deployment:**
 
-- Bronze: `etl/{dataset}/glue/bronze_job.py`
-- Gold: `etl/{dataset}/glue/gold_job.py`
+- HTTP/ZIP datasets: Use shared `utils-runtime/https_zip/bronze_http_job.py`
+- Custom bronze jobs: `etl/{dataset}/glue/bronze_job.py`
+- Gold layer: `etl/{dataset}/glue/gold_job.py`
 
 **Shared Code Organization:**
 
-- `util-deploytime/` - Deploy-time utilities (used by CDK during deployment)
+- `utils-deploytime/` - Deploy-time utilities (used by CDK during deployment)
   - `EtlConfig.js` - Shared configuration methods and helpers
-- `util-runtime/` - Runtime utilities (deployed to S3, used by Glue jobs)
-  - `etl_utils.py` - Shared download, extraction, and file handling functions
+- `utils-runtime/` - Runtime utilities (deployed to S3, used by Glue jobs)
+  - `https_zip/` - Shared bronze job and utilities for HTTP/ZIP data sources
+    - `bronze_http_job.py` - Complete shared bronze job (download, extract, transform, write to S3)
+    - `etl_utils.py` - Helper functions for download and extraction
 
 ## Stack Implementation Patterns
 
@@ -112,7 +115,7 @@ Use the centralized `EtlConfig.js` class for all configuration and helper method
 
 **Single-Table Datasets:**
 ```javascript
-const etlConfig = require("../util-deploytime/EtlConfig");
+const etlConfig = require("../utils-deploytime/EtlConfig");
 const datasetConfig = require("./config.json");
 
 // Get all computed values from EtlConfig methods
@@ -124,7 +127,7 @@ const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category)
 
 **Multi-Table Datasets:**
 ```javascript
-const etlConfig = require("../util-deploytime/EtlConfig");
+const etlConfig = require("../utils-deploytime/EtlConfig");
 const datasetConfig = require("./config.json");
 const dataset = datasetConfig.dataset;
 
@@ -223,40 +226,18 @@ new glue.CfnCrawler(this, "BronzeProductsCrawler", {
 });
 ```
 
-**Python - Runtime Utilities and File Handling:**
+**Shared Bronze Job for HTTP/ZIP Datasets:**
 
-```python
-import json
-import posixpath
+For HTTP/ZIP data sources, datasets now use the shared `bronze_http_job.py` which handles:
+- Download from HTTP/HTTPS URLs
+- ZIP extraction with file mapping
+- Schema-driven transformations (column renaming, type casting, date parsing)
+- Writing to Bronze layer as Parquet
 
-# ✅ Load shared runtime utilities
-sys.path.append('/tmp')
-s3_client = boto3.client('s3')
-s3_client.download_file(raw_bucket, 'etl/util-runtime/etl_utils.py', '/tmp/etl_utils.py')
-from etl_utils import download_and_extract
-
-# ✅ Stack passes complete S3 URLs and schema directly from getS3Paths()
-raw_base_path = args['raw_path']      # "s3://bucket/raw/dataset/" - full URL from stack
-bronze_s3_path = args['bronze_path']  # "s3://bucket/bronze/dataset/" - full URL from stack
-file_table_mapping = json.loads(args['file_table_mapping'])
-column_schema = json.loads(args['column_schema']) if 'column_schema' in args else None
-
-# ✅ Append run_id to raw path for lineage tracking
-scheme, path = raw_base_path.rstrip('/').split('://', 1)
-raw_s3_path = f"{scheme}://{posixpath.join(path, f'run_id={run_id}')}/"
-
-# ✅ Use shared utilities for download and extraction
-result = download_and_extract(source_url, raw_s3_path, file_table_mapping)
-csv_count = result["files_extracted"]
-
-# ✅ Read and apply schema-driven transformations
-csv_filename = list(file_table_mapping.keys())[0]
-csv_file_path = posixpath.join(raw_s3_path, csv_filename)
-df = spark.read.option("header", "true").csv(csv_file_path)
-
-# ✅ Apply schema for column renaming and type casting
-if column_schema:
-    df = apply_schema(df, column_schema)  # Handles dates, types, renaming
+Stack configuration points to shared script:
+```javascript
+// For HTTP/ZIP datasets using shared bronze job
+const scriptLocation = `s3://${bucketName}/etl/utils-runtime/https_zip/bronze_http_job.py`;
 ```
 
 **IAM Role Strategy:**
@@ -283,11 +264,10 @@ if column_schema:
 
 **Glue Job Best Practices:**
 
-- Use shared `etl_utils.download_and_extract()` for all file operations
+- **Use shared `bronze_http_job.py` for all HTTP/ZIP datasets** (no custom bronze jobs needed)
 - Leverage `file_table_mapping` for explicit file-to-table relationships
 - **Use `column_schema` for predictable transformations** instead of guessing column types
-- Apply schema with `apply_schema(df, column_schema)` function for consistent type casting
-- Use `posixpath.join()` for safe S3 path construction
+- For custom jobs: Use `posixpath.join()` for safe S3 path construction
 - Read data from S3 paths with Spark, never local filesystem
 
 **Spark Configuration:**
@@ -313,12 +293,12 @@ spark.conf.set("spark.sql.parquet.summary.metadata.level", "ALL")
 ## Adding New Datasets
 
 1. **Create dataset config**: `{dataset}/config.json` with `file_table_mapping` and `column_schema`
-2. **Create Glue job**: `{dataset}/glue/bronze_job.py` using:
-   - `etl_utils.download_and_extract()` for file operations
-   - `apply_schema(df, column_schema)` for schema-driven transformations
-3. **Create dataset stack**: `{dataset}/{Dataset}Stack.js` importing from `util-deploytime/EtlConfig`
-4. **Update index.js**: Add stack with dependency on EtlCoreStack
-5. **Deploy**: `cdk deploy --all`
+2. **Create dataset stack**: `{dataset}/{Dataset}Stack.js`:
+   - Import `utils-deploytime/EtlConfig`
+   - For HTTP/ZIP sources: Point to shared `utils-runtime/https_zip/bronze_http_job.py`
+   - Only create custom bronze job for non-HTTP/ZIP sources
+3. **Update index.js**: Add stack with dependency on EtlCoreStack
+4. **Deploy**: `cdk deploy --all`
 
 **Role Decision:**
 
