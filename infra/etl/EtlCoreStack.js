@@ -1,7 +1,9 @@
 const cdk = require("aws-cdk-lib");
 const s3 = require("aws-cdk-lib/aws-s3");
+const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
 const glue = require("aws-cdk-lib/aws-glue");
 const iam = require("aws-cdk-lib/aws-iam");
+const path = require("path");
 
 class EtlCoreStack extends cdk.Stack {
   constructor(scope, id, props) {
@@ -43,6 +45,13 @@ class EtlCoreStack extends cdk.Stack {
 
     // Grant S3 access to Glue for data warehouse bucket
     dataWarehouseBucket.grantReadWrite(glueRole);
+
+    // Deploy shared runtime utilities (used by all datasets)
+    new s3deploy.BucketDeployment(this, "RuntimeUtils", {
+      sources: [s3deploy.Source.asset(path.join(__dirname, "utils-runtime"))],
+      destinationBucket: dataWarehouseBucket,
+      destinationKeyPrefix: "etl/utils-runtime/",
+    });
 
     // Glue bronze database for Athena queries (shared across all datasets)
     const bronzeDatabase = new glue.CfnDatabase(this, "BronzeDatabase", {

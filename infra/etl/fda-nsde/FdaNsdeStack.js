@@ -1,7 +1,5 @@
 const cdk = require("aws-cdk-lib");
 const glue = require("aws-cdk-lib/aws-glue");
-const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
-const path = require("path");
 
 class FdaNsdeStack extends cdk.Stack {
   constructor(scope, id, props) {
@@ -19,13 +17,6 @@ class FdaNsdeStack extends cdk.Stack {
     const resourceNames = etlConfig.getResourceNames(dataset, tables);
     const paths = etlConfig.getS3Paths(bucketName, dataset, tables);
     const workerConfig = etlConfig.getWorkerConfig(datasetConfig.data_size_category);
-
-    // Deploy shared runtime utilities (TODO: Move to EtlCoreStack to avoid duplication)
-    new s3deploy.BucketDeployment(this, "RuntimeUtils", {
-      sources: [s3deploy.Source.asset(path.join(__dirname, "..", "utils-runtime"))],
-      destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: "etl/utils-runtime/",
-    });
 
     // Bronze job using shared HTTP/ZIP processor
     new glue.CfnJob(this, "BronzeJob", {
