@@ -38,6 +38,7 @@ EventBridge → Glue Job → S3 (Raw + Bronze) → Crawler → Athena
 - `dataset`: Name used in paths and resources
 - `data_size_category`: Determines worker allocation (small/medium/large/xlarge)
 - `source_url` or `api_endpoints`: Data source configuration
+- `delimiter`: File delimiter (`,` for CSV, `\t` for TSV, `|` for pipe-delimited, etc.)
 - `file_table_mapping`: Maps source filenames to table names
 - `column_schema`: Explicit column definitions with types and transformations:
   ```json
@@ -113,107 +114,66 @@ For datasets containing multiple files (e.g., zip with product.txt + package.txt
 **Deploy Utilities:**
 Use the centralized deploy utilities for all configuration and resource creation:
 
-**Single-Table Datasets:**
+**Unified Pattern for ALL Bronze Stacks (Single and Multi-Table):**
 ```javascript
-const deployUtils = require("../utils-deploytime");
-const datasetConfig = require("./config.json");
+const cdk = require("aws-cdk-lib");
 
-// Get all computed values from deploy utility methods
-const databases = deployUtils.getDatabaseNames();
-const tables = Object.values(datasetConfig.file_table_mapping);
-const resourceNames = deployUtils.getResourceNames(dataset, tables);
-const paths = deployUtils.getS3Paths(bucketName, dataset, tables);
-const workerConfig = deployUtils.getWorkerConfig(datasetConfig.data_size_category);
+class FdaDatasetStack extends cdk.Stack {
+  constructor(scope, id, props) {
+    super(scope, id, props);
 
-// Create resources using factory methods
-deployUtils.createGlueJob(this, resourceNames.bronzeJob, glueRole, scriptLocation, workerConfig, jobArgs);
-deployUtils.createBronzeCrawler(this, resourceNames.bronzeCrawler, glueRole, paths.bronze, databases.bronze);
-```
+    const { dataWarehouseBucket, glueRole } = props.etlCoreStack;
+    const bucketName = dataWarehouseBucket.bucketName;
 
-**Deploy Utilities Methods:**
+    const deployUtils = require("../utils-deploytime");
+    const datasetConfig = require("./config.json");
+    const dataset = datasetConfig.dataset;
 
-- `getDatabaseNames()` - returns `{bronze, gold}` database names
-- `getResourceNames(dataset, options)` - generates job/crawler names
-  - Single-table: `{ bronzeJob, bronzeCrawler, goldJob, goldCrawler }`
-  - Multi-table: Also includes `{ bronzeProductsCrawler, bronzePackagesCrawler }` etc.
-- `getS3Paths(bucketName, dataset, options)` - returns all standard S3 paths as **complete S3 URLs**
-  - Single-table: `{ raw, bronze, gold, scripts, scriptLocation }`
-  - Multi-table: Also includes `{ bronzeTables: { products: "s3://...", packages: "s3://..." } }`
-- `getWorkerConfig(sizeCategory)` - validates and returns worker configuration
-- `getGlueJobArguments(options)` - builds complete job arguments including:
-  - S3 URLs directly from `getS3Paths()` without modification
-  - `column_schema` for schema-driven transformations
-  - **Multi-table jobs need additional path arguments (see below)**
+    const tables = Object.values(datasetConfig.file_table_mapping);
+    const resourceNames = deployUtils.getResourceNames(dataset, tables);
+    const paths = deployUtils.getS3Paths(bucketName, dataset, tables);
 
-**Path Computation (Convention-based):**
-
-```javascript
-const path = require("path");
-
-// ✅ Helper function returns complete S3 URLs
-const s3Path = (bucket, ...segments) =>
-  `s3://${bucket}/` + path.posix.join(...segments) + "/";
-
-// Computed in stack files, not config - complete S3 URLs
-const rawPath = s3Path(bucketName, "raw", dataset); // "s3://bucket/raw/dataset/"
-const bronzePath = s3Path(bucketName, "bronze", dataset); // "s3://bucket/bronze/dataset/"
-const scriptLocation =
-  `s3://${bucketName}/` +
-  path.posix.join("etl", dataset, "glue", "bronze_job.py");
-
-// Database names computed from prefix
-const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
-```
-
-**Multi-Table Glue Job Arguments:**
-Multi-table datasets require additional S3 path arguments for each table:
-
-```javascript
-// Bronze Glue job for multi-table processing
-new glue.CfnJob(this, "BronzeJob", {
-  name: resourceNames.bronzeJob,
-  role: glueRole.roleArn,
-  command: {
-    name: "glueetl",
-    scriptLocation: paths.scriptLocation.bronze,
-    pythonVersion: etlConfig.glue_defaults.python_version,
-  },
-  glueVersion: etlConfig.glue_defaults.version,
-  workerType: workerConfig.worker_type,
-  numberOfWorkers: workerConfig.number_of_workers,
-  maxRetries: etlConfig.glue_defaults.max_retries,
-  timeout: etlConfig.glue_defaults.timeout_minutes,
-  defaultArguments: {
-    ...etlConfig.getGlueJobArguments({
+    // Bronze job using shared HTTP/ZIP processor
+    deployUtils.createGlueJob(this, {
       dataset,
       bucketName,
       datasetConfig,
-      layer: 'bronze'
-    }),
-    // ✅ CRITICAL: Multi-table jobs need individual table paths
-    "--bronze_products_path": paths.bronzeTables.products,
-    "--bronze_packages_path": paths.bronzeTables.packages,
-  },
-});
+      layer: 'bronze',
+      tables,
+      glueRole,
+      workerSize: datasetConfig.data_size_category
+    });
+
+    // Create crawlers and outputs (handles both single and multi-table datasets automatically)
+    deployUtils.createBronzeCrawlers(this, dataset, tables, glueRole, resourceNames, paths);
+  }
+}
 ```
 
-**Multi-Table Crawler Configuration:**
-Use `paths.bronzeTables.tableName` for crawler targets:
+This same code works for:
+- Single-table datasets (one crawler for entire bronze path)
+- Multi-table datasets (one crawler per table with appropriate paths)
+- Automatic output generation for all crawlers
 
-```javascript
-// ✅ Correct multi-table crawler path
-new glue.CfnCrawler(this, "BronzeProductsCrawler", {
-  name: resourceNames.bronzeProductsCrawler,
-  role: glueRole.roleArn,
-  databaseName: databases.bronze,
-  targets: {
-    s3Targets: [{
-      path: paths.bronzeTables.products  // NOT paths.bronze.products
-    }]
-  },
-  // ... configuration
-});
-```
+**Deploy Utilities Methods:**
+
+- `getResourceNames(dataset, tables)` - generates all job/crawler names
+  - Single-table: `{ bronzeJob, bronzeCrawler, goldJob, goldCrawler, bronzeDatabase, goldDatabase }`
+  - Multi-table: Includes individual crawler names like `{ bronzeFdaProductsCrawler, bronzeFdaPackagesCrawler }` etc.
+- `getS3Paths(bucketName, dataset, tables)` - returns all standard S3 paths as **complete S3 URLs**
+  - Always includes: `{ raw, bronze, gold, scripts, scriptLocation }`
+  - Multi-table: Also includes `{ bronzeTables: { "fda-products": "s3://...", "fda-packages": "s3://..." } }`
+- `getWorkerConfig(sizeCategory)` - validates and returns worker configuration from predefined sizes
+- `createGlueJob(scope, options)` - creates complete Glue job with all configurations
+  - Automatically determines script location (shared HTTP/ZIP or custom)
+  - Handles all job arguments for both single and multi-table datasets
+  - Returns the created job resource
+- `createBronzeCrawlers(scope, dataset, tables, glueRole, resourceNames, paths)` - creates all crawlers and outputs
+  - Single-table: Creates one crawler for entire bronze path
+  - Multi-table: Creates one crawler per table with correct paths
+  - Automatically generates CfnOutputs for all resources
+  - Returns outputs object for further customization if needed
+
 
 **Shared Bronze Job for HTTP/ZIP Datasets:**
 

@@ -3,6 +3,7 @@
   "source_url": "https://www.accessdata.fda.gov/cder/ndctext.zip",
   "description": "FDA CDER National Drug Code Directory with Products and Packages",
   "data_size_category": "medium",
+  "delimiter": "\t",
   "file_table_mapping": {
     "product.txt": "fda-products",
     "package.txt": "fda-packages"

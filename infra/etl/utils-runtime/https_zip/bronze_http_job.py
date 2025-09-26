@@ -126,8 +126,13 @@ try:
         source_s3_path = posixpath.join(raw_s3_path, source_file)
         print(f"Reading from: {source_s3_path}")
 
+        # Get delimiter from config (default to comma if not specified)
+        delimiter = args.get('delimiter', ",")
+        print(f"Reading {source_file} with delimiter: {'TAB' if delimiter == '\t' else 'COMMA' if delimiter == ',' else repr(delimiter)}")
+
         df = spark.read.option("header", "true") \
                       .option("inferSchema", "true") \
+                      .option("delimiter", delimiter) \
                       .csv(source_s3_path)
 
         # Validate data exists

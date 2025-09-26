@@ -3,6 +3,7 @@
   "source_url": "https://download.open.fda.gov/Comprehensive_NDC_SPL_Data_Elements_File.zip",
   "description": "FDA Comprehensive NDC SPL Data Elements File",
   "data_size_category": "small",
+  "delimiter": ",",
   "file_table_mapping": {
     "Comprehensive_NDC_SPL_Data_Elements_File.csv": "fda-nsde"
   },

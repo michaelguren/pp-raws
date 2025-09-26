@@ -14,37 +14,20 @@ class FdaNsdeStack extends cdk.Stack {
     const tables = Object.values(datasetConfig.file_table_mapping);
     const resourceNames = deployUtils.getResourceNames(dataset, tables);
     const paths = deployUtils.getS3Paths(bucketName, dataset, tables);
-    const workerConfig = deployUtils.getWorkerConfig(datasetConfig.data_size_category);
 
     // Bronze job using shared HTTP/ZIP processor
-    deployUtils.createGlueJob(
-      this,
-      resourceNames.bronzeJob,
+    deployUtils.createGlueJob(this, {
+      dataset,
+      bucketName,
+      datasetConfig,
+      layer: 'bronze',
+      tables,
       glueRole,
-      `s3://${bucketName}/etl/utils-runtime/https_zip/bronze_http_job.py`,
-      workerConfig,
-      deployUtils.getGlueJobArguments({
-        dataset,
-        bucketName,
-        datasetConfig,
-        layer: 'bronze',
-        tables
-      })
-    );
-
-    // Bronze crawler
-    deployUtils.createBronzeCrawler(this, resourceNames.bronzeCrawler, glueRole, paths.bronze, resourceNames.bronzeDatabase);
-
-    // Outputs
-    new cdk.CfnOutput(this, "BronzeJobName", {
-      value: resourceNames.bronzeJob,
-      description: "Bronze Glue Job Name"
+      workerSize: datasetConfig.data_size_category
     });
 
-    new cdk.CfnOutput(this, "BronzeCrawlerName", {
-      value: resourceNames.bronzeCrawler,
-      description: "Bronze Crawler Name"
-    });
+    // Create crawlers and outputs (handles both single and multi-table datasets)
+    deployUtils.createBronzeCrawlers(this, dataset, tables, glueRole, resourceNames, paths);
   }
 }
 

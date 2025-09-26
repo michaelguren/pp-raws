@@ -122,11 +122,12 @@ class EtlDeployUtils {
 
     // Generate bronze table paths for each table
     tables.forEach((tableName) => {
-      // Use table name directly as path: bronze/fda-products/, bronze/fda-packages/
-      // This results in table names: fda_products, fda_packages
+      // Multi-table datasets store under: bronze/{dataset}/{tableName}/
+      // Single-table datasets this path isn't used (crawler uses paths.bronze instead)
       paths.bronzeTables[tableName] = this.s3Path(
         bucketName,
         "bronze",
+        dataset,
         tableName
       );
     });
@@ -150,13 +151,29 @@ class EtlDeployUtils {
     return config;
   }
 
-  // Build Glue job default arguments
-  getGlueJobArguments(options = {}) {
-    const { dataset, bucketName, datasetConfig, layer = "bronze", tables } = options;
+  // Create standardized Glue job
+  createGlueJob(scope, options = {}) {
+    const glue = require("aws-cdk-lib/aws-glue");
 
+    const {
+      dataset,
+      bucketName,
+      datasetConfig = {},
+      layer = "bronze",
+      tables = [],
+      glueRole,
+      scriptLocation, // Optional override
+      workerSize = "medium"
+    } = options;
+
+    // Get worker configuration
+    const workerConfig = this.getWorkerConfig(workerSize);
+
+    // Get resource names
     const resourceNames = this.getResourceNames(dataset, tables);
-    const paths = this.getS3Paths(bucketName, dataset, tables);
 
+    // Build job arguments
+    const paths = this.getS3Paths(bucketName, dataset, tables);
     const args = {
       "--dataset": dataset,
       "--compression_codec": "zstd",
@@ -181,6 +198,10 @@ class EtlDeployUtils {
         args["--date_format"] = datasetConfig.date_format;
       }
 
+      if (datasetConfig.delimiter) {
+        args["--delimiter"] = datasetConfig.delimiter;
+      }
+
       if (datasetConfig.file_table_mapping) {
         args["--file_table_mapping"] = JSON.stringify(
           datasetConfig.file_table_mapping
@@ -199,21 +220,29 @@ class EtlDeployUtils {
       args["--gold_base_path"] = paths.gold;
     }
 
-    return args;
-  }
-
-  // Create standardized Glue job
-  createGlueJob(scope, jobName, glueRole, scriptLocation, workerConfig, jobArguments, layer = "bronze") {
-    const glue = require("aws-cdk-lib/aws-glue");
-
+    // Determine job name and construct ID
+    const jobName = layer === "bronze" ? resourceNames.bronzeJob : resourceNames.goldJob;
     const constructId = layer === "bronze" ? "BronzeJob" : "GoldJob";
+
+    // Determine script location - use default for HTTP/ZIP bronze jobs unless overridden
+    let finalScriptLocation = scriptLocation;
+    if (!finalScriptLocation) {
+      if (layer === "bronze" && datasetConfig.source_url) {
+        // Default to shared HTTP/ZIP processor for bronze jobs with source_url
+        finalScriptLocation = `s3://${bucketName}/etl/utils-runtime/https_zip/bronze_http_job.py`;
+      } else {
+        // Default to dataset-specific script for other cases
+        const scriptFile = layer === "bronze" ? "bronze_job.py" : "gold_job.py";
+        finalScriptLocation = `s3://${bucketName}/etl/${dataset}/glue/${scriptFile}`;
+      }
+    }
 
     return new glue.CfnJob(scope, constructId, {
       name: jobName,
       role: glueRole.roleArn,
       command: {
         name: "glueetl",
-        scriptLocation: scriptLocation,
+        scriptLocation: finalScriptLocation,
         pythonVersion: this.glue_defaults.python_version,
       },
       glueVersion: this.glue_defaults.version,
@@ -221,27 +250,71 @@ class EtlDeployUtils {
       numberOfWorkers: workerConfig.number_of_workers,
       maxRetries: this.glue_defaults.max_retries,
       timeout: this.glue_defaults.timeout_minutes,
-      defaultArguments: jobArguments,
+      defaultArguments: args,
     });
   }
 
-  // Create standardized bronze crawler
-  createBronzeCrawler(scope, resourceName, glueRole, targetPath, databaseName) {
+  // Create all bronze crawlers for a dataset (handles both single and multi-table)
+  createBronzeCrawlers(scope, dataset, tables, glueRole, resourceNames, paths) {
     const glue = require("aws-cdk-lib/aws-glue");
+    const cdk = require("aws-cdk-lib");
+    const outputs = {};
 
-    return new glue.CfnCrawler(scope, "BronzeCrawler", {
-      name: resourceName,
-      role: glueRole.roleArn,
-      databaseName: databaseName,
-      targets: { s3Targets: [{ path: targetPath }] },
-      configuration: JSON.stringify({
-        Version: 1.0,
-        CrawlerOutput: {
-          Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
-          Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
-        }
-      })
+    const crawlerConfig = JSON.stringify({
+      Version: 1.0,
+      CrawlerOutput: {
+        Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
+        Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
+      }
     });
+
+    if (tables.length === 1) {
+      // Single table - one crawler for the whole bronze path
+      new glue.CfnCrawler(scope, "BronzeCrawler", {
+        name: resourceNames.bronzeCrawler,
+        role: glueRole.roleArn,
+        databaseName: resourceNames.bronzeDatabase,
+        targets: { s3Targets: [{ path: paths.bronze }] },
+        configuration: crawlerConfig
+      });
+
+      outputs.BronzeCrawlerName = new cdk.CfnOutput(scope, "BronzeCrawlerName", {
+        value: resourceNames.bronzeCrawler,
+        description: "Bronze Crawler Name",
+      });
+    } else {
+      // Multi-table - one crawler per table
+      tables.forEach((tableName) => {
+        const camelTableName = tableName
+          .split("-")
+          .map((part, i) => i === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1))
+          .join("");
+        const crawlerKey = `bronze${camelTableName.charAt(0).toUpperCase() + camelTableName.slice(1)}Crawler`;
+        const constructId = `Bronze${camelTableName.charAt(0).toUpperCase() + camelTableName.slice(1)}Crawler`;
+        const outputKey = `Bronze${camelTableName.charAt(0).toUpperCase() + camelTableName.slice(1)}CrawlerName`;
+
+        new glue.CfnCrawler(scope, constructId, {
+          name: resourceNames[crawlerKey],
+          role: glueRole.roleArn,
+          databaseName: resourceNames.bronzeDatabase,
+          targets: { s3Targets: [{ path: paths.bronzeTables[tableName] }] },
+          configuration: crawlerConfig
+        });
+
+        outputs[outputKey] = new cdk.CfnOutput(scope, outputKey, {
+          value: resourceNames[crawlerKey],
+          description: `Bronze ${tableName} Crawler Name`,
+        });
+      });
+    }
+
+    // Always add job output
+    outputs.BronzeJobName = new cdk.CfnOutput(scope, "BronzeJobName", {
+      value: resourceNames.bronzeJob,
+      description: "Bronze Glue Job Name",
+    });
+
+    return outputs;
   }
 }
 
