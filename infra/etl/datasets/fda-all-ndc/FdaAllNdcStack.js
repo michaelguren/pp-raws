@@ -3,6 +3,11 @@ const glue = require("aws-cdk-lib/aws-glue");
 const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
 const path = require("path");
 
+/**
+ * FDA All NDC Gold Layer Stack
+ * Combines NSDE and CDER data with custom transformation logic
+ * Gold jobs are dataset-specific and don't use the factory pattern
+ */
 class FdaAllNdcStack extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
@@ -12,8 +17,12 @@ class FdaAllNdcStack extends cdk.Stack {
     const bucketName = dataWarehouseBucket.bucketName;
 
     // Load warehouse and dataset configurations
-    const etlConfig = require("../config.json");
+    const etlConfig = require("../../config.json");
     const datasetConfig = require("./config.json");
+
+    // Load source dataset configs to get table names
+    const fdaNsdeConfig = require("../fda-nsde/config.json");
+    const fdaCderConfig = require("../fda-cder/config.json");
 
     // Compute database names from prefix
     const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
@@ -23,23 +32,32 @@ class FdaAllNdcStack extends cdk.Stack {
     // Get worker configuration based on data size category
     const workerConfig = etlConfig.glue_worker_configs[datasetConfig.data_size_category];
 
-    // Build paths using convention - GOLD layer paths
-    const goldBasePath = `s3://${bucketName}/gold/${datasetConfig.dataset}/`;
-    const goldScriptPath = `s3://${bucketName}/etl/${datasetConfig.dataset}/glue/gold_job.py`;
+    // Extract table names from source dataset configs
+    // For single-table datasets, use the table name from file_table_mapping
+    // Table names in Glue have hyphens converted to underscores
+    const nsdeTableName = Object.values(fdaNsdeConfig.file_table_mapping)[0].replace(/-/g, '_');
 
+    // For multi-table datasets like fda-cder, get table names for products and packages
+    const cderTableNames = Object.values(fdaCderConfig.file_table_mapping).map(name => name.replace(/-/g, '_'));
+    const cderProductsTable = cderTableNames.find(name => name.includes('products'));
+    const cderPackagesTable = cderTableNames.find(name => name.includes('packages'));
+
+    // Build paths using convention - GOLD layer paths
+    const goldBasePath = `s3://${bucketName}/gold/${dataset}/`;
+    const goldScriptPath = `s3://${bucketName}/etl/datasets/${dataset}/glue/gold_job.py`;
 
     // Deploy Glue script to S3
     new s3deploy.BucketDeployment(this, 'DeployGlueScript', {
       sources: [s3deploy.Source.asset(path.join(__dirname, 'glue'))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `etl/${datasetConfig.dataset}/glue/`,
+      destinationKeyPrefix: `etl/datasets/${dataset}/glue/`,
       retainOnDelete: false
     });
 
     // Create GOLD Glue Job
     const goldJob = new glue.CfnJob(this, 'GoldJob', {
-      name: `${etlConfig.etl_resource_prefix}-gold-${datasetConfig.dataset}`,
-      description: `GOLD layer job for ${datasetConfig.dataset} - ${datasetConfig.description}`,
+      name: `${etlConfig.etl_resource_prefix}-gold-${dataset}`,
+      description: `GOLD layer job for ${dataset} - ${datasetConfig.description}`,
       role: glueRole.roleArn,
 
       command: {
@@ -66,7 +84,7 @@ class FdaAllNdcStack extends cdk.Stack {
         '--spark-event-logs-path': `s3://${bucketName}/glue-spark-logs/`,
 
         // Dataset and database configuration
-        '--dataset': datasetConfig.dataset,
+        '--dataset': dataset,
         '--bucket_name': bucketName,
         '--bronze_database': bronzeDatabase,
         '--gold_database': goldDatabase,
@@ -74,19 +92,24 @@ class FdaAllNdcStack extends cdk.Stack {
         // Pre-computed paths
         '--gold_base_path': goldBasePath,
 
+        // Source table names from dataset configs
+        '--nsde_table': nsdeTableName,
+        '--cder_products_table': cderProductsTable,
+        '--cder_packages_table': cderPackagesTable,
+
         // Compression and performance settings
         '--compression_codec': 'ZSTD',
-        '--crawler_name': `${etlConfig.etl_resource_prefix}-gold-${datasetConfig.dataset}-crawler`,
+        '--crawler_name': `${etlConfig.etl_resource_prefix}-gold-${dataset}-crawler`,
 
-        // Additional job-specific arguments can be added here
+        // Additional job-specific arguments
         '--enable-auto-scaling': 'true'
       }
     });
 
     // Create Crawler for GOLD layer
     const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
-      name: `${etlConfig.etl_resource_prefix}-gold-${datasetConfig.dataset}-crawler`,
-      description: `Crawler for GOLD ${datasetConfig.dataset} parquet files`,
+      name: `${etlConfig.etl_resource_prefix}-gold-${dataset}-crawler`,
+      description: `Crawler for GOLD ${dataset} parquet files`,
       role: glueRole.roleArn,
       databaseName: goldDatabase,
 

@@ -229,7 +229,7 @@ class EtlDeployUtils {
     if (!finalScriptLocation) {
       if (layer === "bronze" && datasetConfig.source_url) {
         // Default to shared HTTP/ZIP processor for bronze jobs with source_url
-        finalScriptLocation = `s3://${bucketName}/etl/utils-runtime/https_zip/bronze_http_job.py`;
+        finalScriptLocation = `s3://${bucketName}/etl/shared/runtime/https_zip/bronze_http_job.py`;
       } else {
         // Default to dataset-specific script for other cases
         const scriptFile = layer === "bronze" ? "bronze_job.py" : "gold_job.py";

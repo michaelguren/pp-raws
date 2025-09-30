@@ -15,7 +15,8 @@ from pyspark.sql.functions import lit, col, when, substring, expr  # type: ignor
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'dataset',
     'bronze_database', 'gold_database', 'gold_base_path',
-    'compression_codec', 'crawler_name'
+    'compression_codec', 'crawler_name',
+    'nsde_table', 'cder_products_table', 'cder_packages_table'
 ])
 
 # Initialize Glue
@@ -40,10 +41,16 @@ gold_database = args['gold_database']
 gold_path = args['gold_base_path']
 crawler_name = args['crawler_name']
 
+# Get table names from source dataset configs
+nsde_table = args['nsde_table']
+cder_products_table = args['cder_products_table']
+cder_packages_table = args['cder_packages_table']
+
 print(f"Starting GOLD ETL for {dataset} (INNER JOIN NSDE + CDER)")
 print(f"Bronze database: {bronze_database}")
 print(f"Gold database: {gold_database}")
 print(f"Gold path: {gold_path}")
+print(f"Source tables: {nsde_table}, {cder_products_table}, {cder_packages_table}")
 print(f"Run ID: {run_id}")
 print(f"Mode: overwrite (kill-and-fill)")
 
@@ -54,21 +61,21 @@ try:
     # Read NSDE data
     nsde_df = glueContext.create_dynamic_frame.from_catalog(
         database=bronze_database,
-        table_name="fda_nsde"
+        table_name=nsde_table
     ).toDF()
     print(f"NSDE records: {nsde_df.count()}")
 
     # Read CDER Products
     products_df = glueContext.create_dynamic_frame.from_catalog(
         database=bronze_database,
-        table_name="fda_cder_products"
+        table_name=cder_products_table
     ).toDF()
     print(f"CDER Products records: {products_df.count()}")
 
     # Read CDER Packages
     packages_df = glueContext.create_dynamic_frame.from_catalog(
         database=bronze_database,
-        table_name="fda_cder_packages"
+        table_name=cder_packages_table
     ).toDF()
     print(f"CDER Packages records: {packages_df.count()}")
 

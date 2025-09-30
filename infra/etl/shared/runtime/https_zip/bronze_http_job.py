@@ -21,7 +21,7 @@ args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'dataset', 'bronze_database',
     'raw_path', 'bronze_path',
     'file_table_mapping', 'column_schema', 'source_url',
-    'compression_codec'
+    'compression_codec', 'delimiter'
 ])
 
 # Initialize Spark and Glue contexts
@@ -60,7 +60,7 @@ raw_bucket = raw_path_parts[0]
 # Load shared ETL utilities
 sys.path.append('/tmp')
 s3_client = boto3.client('s3')
-s3_client.download_file(raw_bucket, 'etl/utils-runtime/https_zip/etl_utils.py', '/tmp/etl_utils.py')
+s3_client.download_file(raw_bucket, 'etl/shared/runtime/https_zip/etl_utils.py', '/tmp/etl_utils.py')
 from etl_utils import download_and_extract  # type: ignore[import-not-found]
 
 print(f"Starting Bronze ETL for {dataset}")
@@ -128,10 +128,11 @@ try:
 
         # Get delimiter from config (default to comma if not specified)
         delimiter = args.get('delimiter', ",")
-        print(f"Reading {source_file} with delimiter: {'TAB' if delimiter == '\t' else 'COMMA' if delimiter == ',' else repr(delimiter)}")
+        print(f"Reading {source_file} with delimiter: {repr(delimiter)}")
 
+        # Read all columns as strings, schema transformations applied later
         df = spark.read.option("header", "true") \
-                      .option("inferSchema", "true") \
+                      .option("inferSchema", "false") \
                       .option("delimiter", delimiter) \
                       .csv(source_s3_path)
 

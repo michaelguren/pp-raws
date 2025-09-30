@@ -41,12 +41,12 @@
       "STARTMARKETINGDATE": {
         "target_name": "start_marketing_date",
         "type": "date",
-        "format": "MM/dd/yyyy"
+        "format": "yyyyMMdd"
       },
       "ENDMARKETINGDATE": {
         "target_name": "end_marketing_date",
         "type": "date",
-        "format": "MM/dd/yyyy"
+        "format": "yyyyMMdd"
       },
       "MARKETINGCATEGORYNAME": {
         "target_name": "marketing_category_name",
@@ -87,7 +87,7 @@
       "LISTING_RECORD_CERTIFIED_THROUGH": {
         "target_name": "listing_record_certified_through",
         "type": "date",
-        "format": "MM/dd/yyyy"
+        "format": "yyyyMMdd"
       }
     },
     "fda-packages": {
@@ -110,12 +110,12 @@
       "STARTMARKETINGDATE": {
         "target_name": "start_marketing_date",
         "type": "date",
-        "format": "MM/dd/yyyy"
+        "format": "yyyyMMdd"
       },
       "ENDMARKETINGDATE": {
         "target_name": "end_marketing_date",
         "type": "date",
-        "format": "MM/dd/yyyy"
+        "format": "yyyyMMdd"
       },
       "NDC_EXCLUDE_FLAG": {
         "target_name": "ndc_exclude_flag",
@@ -124,7 +124,7 @@
       "LISTING_RECORD_CERTIFIED_THROUGH": {
         "target_name": "listing_record_certified_through",
         "type": "date",
-        "format": "MM/dd/yyyy"
+        "format": "yyyyMMdd"
       }
     }
   },

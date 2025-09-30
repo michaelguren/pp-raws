@@ -48,9 +48,9 @@ class EtlCoreStack extends cdk.Stack {
 
     // Deploy shared runtime utilities (used by all datasets)
     new s3deploy.BucketDeployment(this, "RuntimeUtils", {
-      sources: [s3deploy.Source.asset(path.join(__dirname, "utils-runtime"))],
+      sources: [s3deploy.Source.asset(path.join(__dirname, "shared/runtime"))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: "etl/utils-runtime/",
+      destinationKeyPrefix: "etl/shared/runtime/",
     });
 
     // Glue bronze database for Athena queries (shared across all datasets)
