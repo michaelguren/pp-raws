@@ -86,6 +86,7 @@ class RxnormStack extends cdk.Stack {
         "--tables_to_process": bronzeTables.map(t => t.toUpperCase()).join(","),
         "--source_url_pattern": datasetConfig.source_url_pattern,
         "--default_release_date": datasetConfig.default_release_date,
+        "--extra-py-files": `s3://${bucketName}/etl/shared/runtime/https_zip/etl_runtime_utils.py`,
         ...etlUtils.glue_defaults.default_arguments,
       },
     });

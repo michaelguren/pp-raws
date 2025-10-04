@@ -18,6 +18,7 @@ from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
 from awsglue.job import Job  # type: ignore[import-not-found]
 from pyspark.sql.functions import lit, col, when, trim  # type: ignore[import-not-found]
+from etl_runtime_utils import _extract_s3_path_parts  # type: ignore[import-not-found]
 
 # ============================================================================
 # HELPER FUNCTIONS (RxNORM-specific)
@@ -234,7 +235,9 @@ try:
     session.headers.update({'User-Agent': 'AWS-Glue-ETL/1.0'})
 
     s3_client = boto3.client('s3')
-    zip_key = posixpath.join(args['raw_path'], f'run_id={run_id}', f'RxNorm_full_{release_date}.zip')
+    # Extract S3 bucket and key prefix from raw_path (e.g., "s3://bucket/raw/rxnorm" -> "bucket", "raw/rxnorm")
+    raw_bucket, raw_prefix = _extract_s3_path_parts(args['raw_path'])
+    zip_key = posixpath.join(raw_prefix, f'run_id={run_id}', f'RxNorm_full_{release_date}.zip')
 
     max_retries = 3
     rrf_files = {}
@@ -275,7 +278,7 @@ try:
                 print(f"  ✓ Downloaded {file_size:,} bytes")
 
                 # Upload original ZIP to S3 for lineage
-                s3_client.upload_fileobj(tmp_file, bucket_name, zip_key)
+                s3_client.upload_fileobj(tmp_file, raw_bucket, zip_key)
                 print(f"  ✓ Saved ZIP to raw layer")
 
                 # Extract RRF files to S3
@@ -286,10 +289,10 @@ try:
                     for file_info in zip_ref.infolist():
                         if not file_info.is_dir() and file_info.filename.startswith('rrf/') and file_info.filename.upper().endswith('.RRF'):
                             clean_filename = file_info.filename.replace('rrf/', '')
-                            rrf_key = posixpath.join(args['raw_path'], f'run_id={run_id}', clean_filename)
+                            rrf_key = posixpath.join(raw_prefix, f'run_id={run_id}', clean_filename)
 
                             with zip_ref.open(file_info) as rrf_file:
-                                s3_client.upload_fileobj(rrf_file, bucket_name, rrf_key)
+                                s3_client.upload_fileobj(rrf_file, raw_bucket, rrf_key)
                                 rrf_files[clean_filename] = rrf_key
 
                 print(f"  ✓ Extracted {len(rrf_files)} RRF files to raw layer")
@@ -325,7 +328,7 @@ try:
         print(f"\n  Processing: {table_name}")
 
         # Read RRF file (pipe-delimited, no header, no quotes)
-        rrf_s3_path = f"s3://{bucket_name}/{rrf_key}"
+        rrf_s3_path = f"s3://{raw_bucket}/{rrf_key}"
         df = spark.read.option("header", "false") \
                       .option("inferSchema", "false") \
                       .option("sep", "|") \

@@ -55,15 +55,18 @@ def apply_schema(df, table_schema):
         # Build expression: rename + cast in one operation
         if col_type == 'date':
             date_format = config.get('format', 'yyyyMMdd')
-            # Handle invalid dates: convert empty strings, nulls, and invalid formats to null
-            # This prevents Spark 3.x INCONSISTENT_BEHAVIOR_CROSS_VERSION errors
+            # Handle invalid dates: convert empty strings, nulls, and ancient dates (before 1900) to null
+            # Ancient dates are almost always data entry errors and cause Spark 3.x Parquet write errors
+            parsed_date = to_date(col(source_col), date_format)
             expr = when(
                 (trim(col(source_col)) == "") |
                 col(source_col).isNull() |
-                (length(trim(col(source_col))) == 0),
+                (length(trim(col(source_col))) == 0) |
+                (parsed_date < '1900-01-01') |
+                parsed_date.isNull(),
                 None
             ).otherwise(
-                to_date(col(source_col), date_format)
+                parsed_date
             ).alias(target_col)
         elif col_type == 'integer':
             expr = col(source_col).cast('integer').alias(target_col)
