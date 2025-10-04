@@ -8,9 +8,9 @@ const { EtlCoreStack } = require("./EtlCoreStack");
 const { FdaNsdeStack } = require("./datasets/fda-nsde/FdaNsdeStack");
 const { FdaCderStack } = require("./datasets/fda-cder/FdaCderStack");
 const { FdaAllNdcStack } = require("./datasets/fda-all-ndc/FdaAllNdcStack");
+const { RxnormStack } = require("./datasets/rxnorm/RxnormStack");
 
 // Future dataset imports will go here:
-// const { RxnormStack } = require("./datasets/rxnorm/RxnormStack");
 // const { RxClassStack } = require("./datasets/rxclass/RxClassStack");
 // etc.
 
@@ -49,6 +49,13 @@ const fdaAllNdcStack = new FdaAllNdcStack(app, "pp-dw-etl-fda-all-ndc", {
   description: "FDA All NDC Gold Layer - Combined NSDE and CDER data"
 });
 fdaAllNdcStack.addDependency(etlCoreStack);
+
+const rxnormStack = new RxnormStack(app, "pp-dw-etl-rxnorm", {
+  env,
+  etlCoreStack,
+  description: "RxNORM ETL pipeline - NLM drug nomenclature (requires UMLS API key)"
+});
+rxnormStack.addDependency(etlCoreStack);
 
 // Add tags to all ETL stacks
 cdk.Tags.of(app).add("Project", "pp-dw");

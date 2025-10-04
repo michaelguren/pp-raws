@@ -448,6 +448,10 @@ try:
             if i < len(df.columns):
                 df = df.withColumnRenamed(f"_c{i}", old_col)
 
+        # Drop any extra unmapped columns (e.g., trailing pipe creates empty column)
+        expected_columns = list(column_mapping.keys())
+        df = df.select(*expected_columns)
+
         # Apply column mapping to get clean names
         df = apply_column_mapping(df, column_mapping)
 
@@ -460,8 +464,9 @@ try:
 
         print(f"{table_name} final columns: {df_bronze.columns}")
 
-        # Write to bronze layer
-        bronze_table_s3_path = f"s3://{bucket_name}/{bronze_path_fragment}_{table_name.lower()}"
+        # Write to bronze layer (standard path: bronze/{dataset}/{table}/)
+        # Note: bronze_path_fragment is a full S3 path from CDK (s3://bucket/bronze/dataset/)
+        bronze_table_s3_path = f"{bronze_path_fragment}{table_name.lower()}"
         print(f"Writing {table_name} to: {bronze_table_s3_path}")
 
         df_bronze.write \
