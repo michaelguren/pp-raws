@@ -38,7 +38,7 @@ def apply_schema(df, table_schema):
         return df
 
     # Import PySpark functions here (only available in Glue runtime)
-    from pyspark.sql.functions import col, to_date  # type: ignore[import-not-found]
+    from pyspark.sql.functions import col, to_date, when, trim, length  # type: ignore[import-not-found]
 
     # Build list of column transformations
     select_cols = []
@@ -55,7 +55,16 @@ def apply_schema(df, table_schema):
         # Build expression: rename + cast in one operation
         if col_type == 'date':
             date_format = config.get('format', 'yyyyMMdd')
-            expr = to_date(col(source_col), date_format).alias(target_col)
+            # Handle invalid dates: convert empty strings, nulls, and invalid formats to null
+            # This prevents Spark 3.x INCONSISTENT_BEHAVIOR_CROSS_VERSION errors
+            expr = when(
+                (trim(col(source_col)) == "") |
+                col(source_col).isNull() |
+                (length(trim(col(source_col))) == 0),
+                None
+            ).otherwise(
+                to_date(col(source_col), date_format)
+            ).alias(target_col)
         elif col_type == 'integer':
             expr = col(source_col).cast('integer').alias(target_col)
         elif col_type == 'long':
