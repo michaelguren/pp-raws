@@ -9,7 +9,7 @@ from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
 from awsglue.job import Job  # type: ignore[import-not-found]
-from pyspark.sql.functions import lit, col, when, substring, expr  # type: ignore[import-not-found]
+from pyspark.sql.functions import lit, col, when, substring, expr, split, lpad, regexp_replace, concat  # type: ignore[import-not-found]
 
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
@@ -79,7 +79,21 @@ try:
     ).toDF()
     print(f"CDER Packages records: {packages_df.count()}")
 
-    # Step 2: Join CDER Products + Packages (excluding NDCs marked for exclusion)
+    # Step 2: Format NDC in packages table
+    print("Formatting NDC from CDER packages...")
+
+    # Format ndc_package_code (XXXXX-XXXX-XX) to 11-digit format (XXXXXXXXXXX)
+    # Split on hyphen, pad each segment, then concatenate
+    packages_formatted = packages_df.withColumn(
+        "formatted_ndc",
+        concat(
+            lpad(split(col("ndc_package_code"), "-").getItem(0), 5, "0"),  # First segment: 5 digits
+            lpad(split(col("ndc_package_code"), "-").getItem(1), 4, "0"),  # Second segment: 4 digits
+            lpad(split(col("ndc_package_code"), "-").getItem(2), 2, "0")   # Third segment: 2 digits
+        )
+    )
+
+    # Step 3: Join CDER Products + Packages (excluding NDCs marked for exclusion)
     print("Joining CDER products and packages...")
 
     # Filter out excluded NDCs
@@ -88,12 +102,12 @@ try:
     )
 
     cder_joined = products_filtered.join(
-        packages_df,
+        packages_formatted,
         "product_id",
         "inner"
     ).select(
         # Use package NDC as primary key (11-digit)
-        packages_df["formatted_ndc"].alias("fda_ndc_11"),
+        packages_formatted["formatted_ndc"].alias("fda_ndc_11"),
 
         # Product info from CDER products table
         products_filtered["marketing_category_name"].alias("fda_marketing_category"),
@@ -104,27 +118,29 @@ try:
         products_filtered["dea_schedule"].alias("fda_dea_schedule"),
         products_filtered["active_numerator_strength"],
         products_filtered["active_ingredient_unit"],
-        products_filtered["spl_id"],
+
+        # Derive spl_id from product_id (part after underscore)
+        split(products_filtered["product_id"], "_").getItem(1).alias("spl_id"),
 
         # Package info from CDER packages table
-        packages_df["package_description"].alias("fda_package_description"),
-        packages_df["start_marketing_date"].alias("fda_marketing_start_date"),
-        packages_df["end_marketing_date"].alias("fda_marketing_end_date"),
+        packages_formatted["package_description"].alias("fda_package_description"),
+        packages_formatted["start_marketing_date"].alias("fda_marketing_start_date"),
+        packages_formatted["end_marketing_date"].alias("fda_marketing_end_date"),
 
         # Computed fields
-        substring(packages_df["formatted_ndc"], 1, 5).alias("fda_ndc_5"),
+        substring(packages_formatted["formatted_ndc"], 1, 5).alias("fda_ndc_5"),
 
         # Default values
         lit("").alias("fda_billing_unit"),  # Not in CDER data
         lit(False).alias("repackager"),     # Will be computed later if needed
 
         # Metadata
-        packages_df["meta_run_id"]
+        packages_formatted["meta_run_id"]
     )
 
     print(f"CDER joined records: {cder_joined.count()}")
 
-    # Step 3: INNER JOIN with NSDE (only NDCs present in both datasets)
+    # Step 4: INNER JOIN with NSDE (only NDCs present in both datasets)
     print("Performing INNER JOIN with NSDE data...")
 
     gold_df = cder_joined.join(
@@ -186,7 +202,7 @@ try:
     print(f"Final GOLD records (INNER JOIN): {gold_df.count()}")
     print(f"Final GOLD columns: {gold_df.columns}")
 
-    # Step 4: Write to GOLD layer
+    # Step 5: Write to GOLD layer
     print(f"Writing GOLD data to: {gold_path}")
 
     # Convert to DynamicFrame for writing
