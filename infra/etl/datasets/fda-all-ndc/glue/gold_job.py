@@ -191,10 +191,6 @@ try:
         # Flag indicating NSDE presence (always TRUE since this is INNER JOIN)
         lit(True).alias("fda_nsde_flag"),
 
-        # Placeholder columns for future ETL
-        lit("").alias("rxcui"),
-        lit("").alias("tty"),
-
         # Metadata
         col("meta_run_id")
     )

@@ -90,54 +90,6 @@ class RxnormStack extends cdk.Stack {
       },
     });
 
-    // Gold Job: RxCUI Changes Tracking
-    new glue.CfnJob(this, "RxcuiChangesJob", {
-      name: `${etlUtils.etl_resource_prefix}-gold-rxcui-changes`,
-      role: rxnormGlueRole.roleArn,
-      command: {
-        name: "glueetl",
-        scriptLocation: `s3://${bucketName}/etl/${dataset}/glue/rxcui_changes_job.py`,
-        pythonVersion: etlUtils.glue_defaults.python_version,
-      },
-      glueVersion: etlUtils.glue_defaults.version,
-      workerType: "G.1X",
-      numberOfWorkers: 5,
-      maxRetries: etlUtils.glue_defaults.max_retries,
-      timeout: etlUtils.glue_defaults.timeout_minutes,
-      defaultArguments: {
-        "--dataset": dataset,
-        "--bronze_database": resourceNames.bronzeDatabase,
-        "--gold_database": resourceNames.goldDatabase,
-        "--bucket_name": bucketName,
-        "--compression_codec": "zstd",
-        ...etlUtils.glue_defaults.default_arguments,
-      },
-    });
-
-    // Gold Job: RxNORM-NDC Mapping Enrichment
-    new glue.CfnJob(this, "GoldEnrichmentJob", {
-      name: `${etlUtils.etl_resource_prefix}-gold-rxnorm-ndc-mapping`,
-      role: rxnormGlueRole.roleArn,
-      command: {
-        name: "glueetl",
-        scriptLocation: `s3://${bucketName}/etl/${dataset}/glue/gold_enrichment_job.py`,
-        pythonVersion: etlUtils.glue_defaults.python_version,
-      },
-      glueVersion: etlUtils.glue_defaults.version,
-      workerType: "G.1X",
-      numberOfWorkers: 5,
-      maxRetries: etlUtils.glue_defaults.max_retries,
-      timeout: etlUtils.glue_defaults.timeout_minutes,
-      defaultArguments: {
-        "--dataset": dataset,
-        "--bronze_database": resourceNames.bronzeDatabase,
-        "--gold_database": resourceNames.goldDatabase,
-        "--bucket_name": bucketName,
-        "--compression_codec": "zstd",
-        ...etlUtils.glue_defaults.default_arguments,
-      },
-    });
-
     // Bronze Crawlers - use centralized helper (handles multi-table datasets)
     etlUtils.createBronzeCrawlers(
       this,
@@ -148,58 +100,11 @@ class RxnormStack extends cdk.Stack {
       paths
     );
 
-    // Gold Crawlers (RxNORM has 2 custom gold outputs)
-    const crawlerConfig = JSON.stringify({
-      Version: 1.0,
-      CrawlerOutput: {
-        Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
-        Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
-      }
-    });
-
-    new glue.CfnCrawler(this, "RxcuiChangesCrawler", {
-      name: `${etlUtils.etl_resource_prefix}-gold-rxcui-changes-crawler`,
-      role: rxnormGlueRole.roleArn,
-      databaseName: resourceNames.goldDatabase,
-      targets: {
-        s3Targets: [{ path: `s3://${bucketName}/gold/rxcui-changes/` }]
-      },
-      configuration: crawlerConfig
-    });
-
-    new glue.CfnCrawler(this, "NdcMappingCrawler", {
-      name: `${etlUtils.etl_resource_prefix}-gold-rxnorm-ndc-mapping-crawler`,
-      role: rxnormGlueRole.roleArn,
-      databaseName: resourceNames.goldDatabase,
-      targets: {
-        s3Targets: [{ path: `s3://${bucketName}/gold/rxnorm-ndc-mapping/` }]
-      },
-      configuration: crawlerConfig
-    });
-
     // Outputs (BronzeJobName already created by createBronzeCrawlers)
-    new cdk.CfnOutput(this, "GoldJobNames", {
-      value: JSON.stringify({
-        rxcuiChanges: `${etlUtils.etl_resource_prefix}-gold-rxcui-changes`,
-        ndcMapping: `${etlUtils.etl_resource_prefix}-gold-rxnorm-ndc-mapping`
-      }),
-      description: "Gold Job Names",
-    });
-
-    new cdk.CfnOutput(this, "GoldCrawlerNames", {
-      value: JSON.stringify({
-        rxcuiChanges: `${etlUtils.etl_resource_prefix}-gold-rxcui-changes-crawler`,
-        ndcMapping: `${etlUtils.etl_resource_prefix}-gold-rxnorm-ndc-mapping-crawler`
-      }),
-      description: "Gold Crawler Names",
-    });
-
     new cdk.CfnOutput(this, "ExecutionOrder", {
       value: JSON.stringify([
         "1. Run Bronze Job (with --release_date parameter)",
-        "2. Run Bronze Crawlers (after Bronze completes)",
-        "3. Run Gold Jobs: rxcui-changes + ndc-mapping (after Crawlers complete)",
-        "4. Run Gold Crawlers (after Gold Jobs complete)"
+        "2. Run Bronze Crawlers (after Bronze completes)"
       ]),
       description: "Execution Order",
     });

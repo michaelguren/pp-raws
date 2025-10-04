@@ -9,10 +9,8 @@ const { FdaNsdeStack } = require("./datasets/fda-nsde/FdaNsdeStack");
 const { FdaCderStack } = require("./datasets/fda-cder/FdaCderStack");
 const { FdaAllNdcStack } = require("./datasets/fda-all-ndc/FdaAllNdcStack");
 const { RxnormStack } = require("./datasets/rxnorm/RxnormStack");
-
-// Future dataset imports will go here:
-// const { RxClassStack } = require("./datasets/rxclass/RxClassStack");
-// etc.
+const { RxnormSplMappingsStack } = require("./datasets/rxnorm-spl-mappings/RxnormSplMappingsStack");
+const { RxClassStack } = require("./datasets/rxclass/RxClassStack");
 
 const app = new cdk.App();
 
@@ -56,6 +54,20 @@ const rxnormStack = new RxnormStack(app, "pp-dw-etl-rxnorm", {
   description: "RxNORM ETL pipeline - NLM drug nomenclature (requires UMLS API key)"
 });
 rxnormStack.addDependency(etlCoreStack);
+
+const rxnormSplMappingsStack = new RxnormSplMappingsStack(app, "pp-dw-etl-rxnorm-spl-mappings", {
+  env,
+  etlCoreStack,
+  description: "RxNORM SPL Mappings ETL pipeline - DailyMed RxCUI to SPL SET ID mappings"
+});
+rxnormSplMappingsStack.addDependency(etlCoreStack);
+
+const rxClassStack = new RxClassStack(app, "pp-dw-etl-rxclass", {
+  env,
+  etlCoreStack,
+  description: "RxClass ETL pipeline - NLM RxNav drug classification API"
+});
+rxClassStack.addDependency(etlCoreStack);
 
 // Add tags to all ETL stacks
 cdk.Tags.of(app).add("Project", "pp-dw");

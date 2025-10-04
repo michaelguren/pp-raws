@@ -1,0 +1,39 @@
+{
+  "dataset": "rxnorm-spl-mappings",
+  "source_url": "https://dailymed-data.nlm.nih.gov/public-release-files/rxnorm_mappings.zip",
+  "description": "RxNORM to SPL SET ID mappings from DailyMed",
+  "data_size_category": "small",
+  "delimiter": "|",
+  "file_table_mapping": {
+    "rxnorm_mappings.txt": "rxnorm-spl-mappings"
+  },
+  "column_schema": {
+    "rxnorm-spl-mappings": {
+      "SETID": {
+        "target_name": "set_id",
+        "type": "string"
+      },
+      "SPL_VERSION": {
+        "target_name": "spl_version",
+        "type": "string"
+      },
+      "RXCUI": {
+        "target_name": "rxcui",
+        "type": "string"
+      },
+      "RXSTRING": {
+        "target_name": "rx_string",
+        "type": "string"
+      },
+      "RXTTY": {
+        "target_name": "rx_tty",
+        "type": "string"
+      }
+    }
+  },
+  "schedule": {
+    "enabled": false,
+    "expression": "cron(0 3 * * ? *)",
+    "description": "Daily at 3 AM UTC (DailyMed updates daily)"
+  }
+}

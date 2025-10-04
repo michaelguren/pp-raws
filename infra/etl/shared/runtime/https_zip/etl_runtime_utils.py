@@ -15,7 +15,76 @@ from zipfile import BadZipFile
 from urllib.error import URLError, HTTPError
 
 
-def safe_key(prefix, name):
+def _extract_s3_path_parts(s3_path):
+    """Extract path parts from S3 path like s3://bucket/key/path"""
+    parts = s3_path.replace('s3://', '').split('/', 1)
+    bucket = parts[0]
+    prefix = parts[1] if len(parts) > 1 else ''
+    return bucket, prefix
+
+
+def apply_schema(df, table_schema):
+    """
+    Apply column schema including renaming and type casting
+
+    Args:
+        df: PySpark DataFrame
+        table_schema: Dict mapping source column names to config with target_name, type, format
+
+    Returns:
+        Transformed DataFrame (or original if table_schema is None/empty)
+    """
+    if not table_schema:
+        return df
+
+    # Import PySpark functions here (only available in Glue runtime)
+    from pyspark.sql.functions import col, to_date  # type: ignore[import-not-found]
+
+    # Build list of column transformations
+    select_cols = []
+    processed_cols = set()
+
+    for source_col, config in table_schema.items():
+        if source_col not in df.columns:
+            print(f"Warning: Column '{source_col}' not found in dataframe, skipping")
+            continue
+
+        target_col = config['target_name']
+        col_type = config.get('type', 'string')
+
+        # Build expression: rename + cast in one operation
+        if col_type == 'date':
+            date_format = config.get('format', 'yyyyMMdd')
+            expr = to_date(col(source_col), date_format).alias(target_col)
+        elif col_type == 'integer':
+            expr = col(source_col).cast('integer').alias(target_col)
+        elif col_type == 'long':
+            expr = col(source_col).cast('long').alias(target_col)
+        elif col_type == 'float':
+            expr = col(source_col).cast('float').alias(target_col)
+        elif col_type == 'decimal':
+             precision = config.get('precision', '10,2')
+             expr = col(source_col).cast(f'decimal({precision})').alias(target_col)
+        elif col_type == 'double':
+            expr = col(source_col).cast('double').alias(target_col)
+        elif col_type == 'boolean':
+            expr = col(source_col).cast('boolean').alias(target_col)
+        else:  # string or default
+            expr = col(source_col).alias(target_col)
+
+        select_cols.append(expr)
+        processed_cols.add(source_col)
+
+    # Add remaining columns that weren't in schema (pass-through)
+    for col_name in df.columns:
+        if col_name not in processed_cols:
+            select_cols.append(col(col_name))
+
+    # Apply all transformations in a single select operation
+    return df.select(*select_cols)
+
+
+def _safe_key(prefix, name):
     """Prevent zip-slip: strip leading slashes, collapse .., keep posix separators"""
     name = name.lstrip("/").replace("\\", "/")
     parts = [p for p in name.split("/") if p not in ("", ".", "..")]
@@ -36,9 +105,7 @@ def download_and_extract(source_url, raw_s3_path, file_table_mapping, max_retrie
         Dict with extraction results: {"files_extracted": int, "content_length": str, "uploaded": dict}
     """
     # Extract bucket and prefix from S3 URL
-    raw_path_parts = raw_s3_path.replace('s3://', '').split('/', 1)
-    raw_bucket = raw_path_parts[0]
-    raw_prefix = raw_path_parts[1] if len(raw_path_parts) > 1 else ''
+    raw_bucket, raw_prefix = _extract_s3_path_parts(raw_s3_path)
 
     # S3 client with retry configuration
     s3_client = boto3.client(
@@ -95,7 +162,7 @@ def download_and_extract(source_url, raw_s3_path, file_table_mapping, max_retrie
 
                             # Flatten the path - use just the basename, no subdirectories
                             target_name = posixpath.basename(zip_name)
-                            file_key = safe_key(raw_prefix, target_name)
+                            file_key = _safe_key(raw_prefix, target_name)
 
                             # Stream each file from zip to S3
                             with zip_ref.open(file_info) as extracted_file:

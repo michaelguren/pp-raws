@@ -237,7 +237,8 @@ class EtlDeployUtils {
       }
     }
 
-    return new glue.CfnJob(scope, constructId, {
+    // Add shared runtime utilities as extra Python files for bronze jobs
+    const jobConfig = {
       name: jobName,
       role: glueRole.roleArn,
       command: {
@@ -251,7 +252,14 @@ class EtlDeployUtils {
       maxRetries: this.glue_defaults.max_retries,
       timeout: this.glue_defaults.timeout_minutes,
       defaultArguments: args,
-    });
+    };
+
+    // Package runtime utilities with bronze jobs
+    if (layer === "bronze" && datasetConfig.source_url) {
+      args["--extra-py-files"] = `s3://${bucketName}/etl/shared/runtime/https_zip/etl_runtime_utils.py`;
+    }
+
+    return new glue.CfnJob(scope, constructId, jobConfig);
   }
 
   // Create all bronze crawlers for a dataset (handles both single and multi-table)

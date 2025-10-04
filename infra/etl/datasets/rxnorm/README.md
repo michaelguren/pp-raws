@@ -5,6 +5,7 @@ Complete ETL pipeline for processing RxNORM data with RRF tables, RxCUI change t
 ## Overview
 
 This ETL pipeline:
+
 1. Downloads RxNORM data using UMLS authentication
 2. Processes multiple RRF tables to Bronze layer
 3. Tracks RxCUI changes (remapped/quantified)
@@ -67,25 +68,6 @@ aws glue start-crawler --name pp-dw-bronze-rxnorm-rxncui-crawler
 aws glue start-crawler --name pp-dw-bronze-rxnorm-rxnatomarchive-crawler
 ```
 
-### 3. GOLD Jobs (After Crawlers Complete)
-
-Run in parallel:
-
-```bash
-# Track RxCUI changes
-aws glue start-job-run --job-name pp-dw-gold-rxcui-changes
-
-# Create NDC mapping
-aws glue start-job-run --job-name pp-dw-gold-rxnorm-ndc-mapping
-```
-
-### 4. GOLD Crawlers
-
-```bash
-aws glue start-crawler --name pp-dw-gold-rxcui-changes-crawler
-aws glue start-crawler --name pp-dw-gold-rxnorm-ndc-mapping-crawler
-```
-
 ## Data Output
 
 ### Bronze Tables
@@ -140,19 +122,23 @@ LEFT JOIN pp_dw_gold.gold_rxnorm_ndc_mapping r
 ## Troubleshooting
 
 ### Authentication Issues
+
 - Verify UMLS API key in Secrets Manager
 - Check API key permissions on UTS website
 
 ### Download Failures
+
 - Check if release date exists (first Monday format)
 - Verify network connectivity and timeouts
 
 ### Bronze Job Failures
+
 - Check Glue logs for RRF parsing errors
 - Verify S3 bucket permissions
 - Monitor memory usage (xlarge workers)
 
 ### Missing Tables
+
 - Ensure all RRF files are in the zip
 - Check table name mappings in bronze job
 - Verify crawler configurations
@@ -169,6 +155,7 @@ Total monthly cost: ~$60-120 for full pipeline
 ## Legacy Integration
 
 This replaces the Rails-based RxNORM ETL with:
+
 - ✅ **Serverless**: No database/server maintenance
 - ✅ **Scalable**: Handles GB-sized files efficiently
 - ✅ **Enhanced**: Includes TTY (not in legacy)
