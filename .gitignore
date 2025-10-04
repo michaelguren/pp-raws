@@ -8,6 +8,7 @@ lerna-debug.log*
 
 # CDK
 cdk.out/
+**/cdk.out/**
 cdk.context.json
 *.generated.ts
 .cdk.staging/

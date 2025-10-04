@@ -2,40 +2,45 @@
 
 ## Multi-App CDK Structure
 
-This project uses a **domain-driven CDK architecture** where each major domain has its own CDK app. This prevents any single `index.js` from becoming too large and keeps domains loosely coupled.
+This project uses a **domain-driven CDK architecture** where each major domain is an independent CDK app. This prevents any single `index.js` from becoming too large and keeps domains loosely coupled.
 
 ```
 infra/
-├── index.js           # Optional orchestrator for cross-domain deployments
-├── cdk.json          # Main CDK config (optional)
-├── etl/              # ETL domain
-│   ├── index.js      # ETL CDK app
-│   ├── cdk.json      # ETL-specific CDK config
+├── index.js           # Reference example for cross-domain dependencies (not used)
+├── etl/              # ETL domain - Independent CDK app
+│   ├── index.js      # ETL CDK app entrypoint
+│   ├── cdk.json      # CDK config: "app": "node index.js"
+│   ├── cdk.out/      # ETL-specific synth output (gitignored)
 │   └── ...
-├── api/              # API domain (future)
-│   ├── index.js      # API CDK app
-│   ├── cdk.json      # API-specific CDK config
+├── api/              # API domain (future) - Independent CDK app
+│   ├── index.js      # API CDK app entrypoint
+│   ├── cdk.json      # CDK config: "app": "node index.js"
+│   ├── cdk.out/      # API-specific synth output (gitignored)
 │   └── ...
-└── frontend/         # Frontend domain (future)
-    ├── index.js      # Frontend CDK app
-    ├── cdk.json      # Frontend-specific CDK config
+└── frontend/         # Frontend domain (future) - Independent CDK app
+    ├── index.js      # Frontend CDK app entrypoint
+    ├── cdk.json      # CDK config: "app": "node index.js"
+    ├── cdk.out/      # Frontend-specific synth output (gitignored)
     └── ...
 ```
 
+**Key principle**: Each domain has its own `cdk.json` pointing to its own `index.js`. No root `cdk.json` exists - domains are completely independent.
+
 ## Deployment Options
 
-### Option 1: Deploy Individual Domains (Recommended)
+### Option 1: Deploy via NPM Scripts (Recommended)
 
-Each domain can be deployed independently:
+Each domain has convenience npm scripts in root `package.json`:
 
 ```bash
 # ETL Infrastructure
 npm run etl:deploy              # Deploy all ETL stacks
 npm run etl:deploy:core         # Deploy only core ETL infrastructure
-npm run etl:deploy:datasets     # Deploy only dataset stacks
+npm run etl:diff                # See what would change
 
 # Future: API Infrastructure
 npm run api:deploy              # Deploy all API stacks
+npm run api:diff                # See what would change
 
 # Future: Frontend Infrastructure
 npm run frontend:deploy         # Deploy all frontend stacks
@@ -43,20 +48,36 @@ npm run frontend:deploy         # Deploy all frontend stacks
 
 ### Option 2: Deploy from Domain Directory
 
+Navigate to domain and use CDK commands directly:
+
 ```bash
 cd infra/etl
 cdk deploy --all                # Deploy all ETL stacks
 cdk deploy pp-dw-etl-core       # Deploy specific stack
+cdk deploy pp-dw-etl-fda-nsde   # Deploy specific dataset
 cdk diff --all                  # See what would change
+cdk synth                       # Synthesize CloudFormation templates
 ```
 
-### Option 3: Cross-Domain Deployment (Optional)
+### Cross-Domain Dependencies (Future)
 
-Use the main `infra/index.js` only when you need cross-domain dependencies:
+When you need cross-domain dependencies (e.g., API needs ETL bucket):
 
-```bash
-npm run deploy                  # Deploy everything (if configured in main index.js)
-```
+1. Export values from source stack (ETL):
+   ```javascript
+   new cdk.CfnOutput(this, "DataBucketName", {
+     value: bucket.bucketName,
+     exportName: "pp-dw-etl-data-bucket"
+   });
+   ```
+
+2. Import in dependent stack (API):
+   ```javascript
+   const bucketName = cdk.Fn.importValue("pp-dw-etl-data-bucket");
+   const bucket = s3.Bucket.fromBucketName(this, "EtlBucket", bucketName);
+   ```
+
+See `infra/index.js` for reference implementation (not actively used).
 
 ## Benefits of This Approach
 
