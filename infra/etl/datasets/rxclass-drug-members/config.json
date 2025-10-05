@@ -1,0 +1,29 @@
+{
+  "dataset": "rxclass-drug-members",
+  "description": "RxClass drug member relationships from NLM RxNav classMembers API",
+  "data_size_category": "large",
+  "schedule": {
+    "enabled": true,
+    "expression": "cron(0 5 1 * ? *)",
+    "description": "Monthly on the 1st at 5 AM (2 hours after RxClass completes)"
+  },
+  "dependencies": {
+    "rxclass": {
+      "bronze_table": "rxclass",
+      "required_columns": ["class_id", "class_name", "class_type"]
+    }
+  },
+  "data_quality": {
+    "critical_null_threshold": 0.01,
+    "required_columns": ["class_id", "rxcui", "name"],
+    "expected_record_count_min": 10000
+  },
+  "api_base_url": "https://rxnav.nlm.nih.gov/REST/rxclass/classMembers.json",
+  "processing_notes": {
+    "method": "Distributed processing using Spark mapPartitions - each worker processes partition of classes in parallel",
+    "rate_limiting": "0.2s delay per API call to be respectful to NLM servers",
+    "data_format": "JSON API responses aggregated per class",
+    "parallelization": "10 workers (large), ~2,200 classes per worker for 22k total classes",
+    "estimated_runtime": "5-10 minutes for full dataset (vs 75-90 min sequential)"
+  }
+}

@@ -5,11 +5,11 @@ const path = require("path");
 const deployUtils = require("../../shared/deploytime");
 
 /**
- * RxClass ETL Stack - Pattern B (Custom API Source)
- * Multi-step REST API collection from NLM RxNav
- * Uses custom bronze job for API-specific logic (rate limiting, pagination, JSON aggregation)
+ * RxClass Drug Members ETL Stack - Pattern B (Custom API Source)
+ * Reads rxclass bronze table and fetches drug members for each class via RxNav API
+ * Uses custom bronze job for API-specific logic (parameter mapping, rate limiting)
  */
-class RxClassStack extends cdk.Stack {
+class RxclassDrugMembersStack extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
@@ -37,7 +37,7 @@ class RxClassStack extends cdk.Stack {
     });
 
     // Bronze Glue job - Custom API-based data collection
-    // Note: Uses custom script (not shared bronze_http_job.py) because this is an API source
+    // Note: Uses custom script because it reads from rxclass bronze table then calls APIs
     const bronzeJob = new glue.CfnJob(this, "BronzeJob", {
       name: resourceNames.bronzeJob,
       role: glueRole.roleArn,
@@ -49,7 +49,7 @@ class RxClassStack extends cdk.Stack {
       glueVersion: deployUtils.glue_defaults.version,
       workerType: workerConfig.worker_type,
       numberOfWorkers: workerConfig.number_of_workers,
-      maxRetries: deployUtils.glue_defaults.max_retries,
+      maxRetries: 0,  // Disabled for debugging - will re-enable once stable
       timeout: deployUtils.glue_defaults.timeout_minutes,
       defaultArguments: {
         // Dataset-specific arguments
@@ -58,8 +58,10 @@ class RxClassStack extends cdk.Stack {
         "--raw_path": paths.raw,
         "--bronze_path": paths.bronze,
         "--compression_codec": "zstd",
-        // API endpoint from config
-        "--all_classes_url": datasetConfig.api_endpoints.all_classes,
+        // Dependency: rxclass bronze table to read from
+        "--rxclass_table": datasetConfig.dependencies.rxclass.bronze_table,
+        // API base URL
+        "--api_base_url": datasetConfig.api_base_url,
         // Shared runtime utilities
         "--extra-py-files": `s3://${bucketName}/etl/shared/runtime/https_zip/etl_runtime_utils.py`,
         // Standard Glue arguments
@@ -89,19 +91,19 @@ class RxClassStack extends cdk.Stack {
     // Outputs
     new cdk.CfnOutput(this, "BronzeJobName", {
       value: resourceNames.bronzeJob,
-      description: "RxClass Bronze Job Name (API collection)",
+      description: "RxClass Drug Members Bronze Job Name (API collection)",
     });
 
     new cdk.CfnOutput(this, "BronzeCrawlerName", {
       value: resourceNames.bronzeCrawler,
-      description: "RxClass Bronze Crawler Name",
+      description: "RxClass Drug Members Bronze Crawler Name",
     });
 
-    new cdk.CfnOutput(this, "ApiEndpoints", {
-      value: JSON.stringify(datasetConfig.api_endpoints),
-      description: "RxNav API endpoints used for data collection",
+    new cdk.CfnOutput(this, "ApiBaseUrl", {
+      value: datasetConfig.api_base_url,
+      description: "RxNav classMembers API endpoint",
     });
   }
 }
 
-module.exports = { RxClassStack };
+module.exports = { RxclassDrugMembersStack };

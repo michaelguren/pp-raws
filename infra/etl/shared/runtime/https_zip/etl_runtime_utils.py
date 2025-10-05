@@ -1,7 +1,7 @@
 """
-Shared ETL utilities for downloading and extracting ZIP files to S3 raw paths
-Specifically handles HTTP/HTTPS downloads of ZIP archives
-Used by bronze Glue jobs processing ZIP data sources
+Shared ETL utilities for bronze layer jobs
+Handles HTTP/HTTPS downloads, ZIP extraction, JSON APIs, and S3 operations
+Used by both factory-based (Pattern A) and custom (Pattern B) bronze jobs
 """
 import boto3 # type: ignore[import-not-found]
 import urllib.request
@@ -10,6 +10,7 @@ import tempfile
 import shutil
 import time
 import posixpath
+import json
 from botocore.config import Config # type: ignore[import-not-found]
 from zipfile import BadZipFile
 from urllib.error import URLError, HTTPError
@@ -101,6 +102,88 @@ def _safe_key(prefix, name):
     name = name.lstrip("/").replace("\\", "/")
     parts = [p for p in name.split("/") if p not in ("", ".", "..")]
     return posixpath.join(prefix, *parts)
+
+
+def build_raw_path_with_run_id(raw_base_path, run_id):
+    """
+    Build raw S3 path with run_id partition for lineage tracking
+
+    Args:
+        raw_base_path: Base raw path like "s3://bucket/raw/dataset/"
+        run_id: Run identifier like "20240311_143022"
+
+    Returns:
+        Complete raw path like "s3://bucket/raw/dataset/run_id=20240311_143022/"
+    """
+    # Remove trailing slash if present, add run_id partition, add trailing slash
+    base = raw_base_path.rstrip('/')
+    return f"{base}/run_id={run_id}/"
+
+
+def fetch_json_with_retry(url, max_retries=3, initial_delay=1):
+    """
+    Fetch JSON from URL with retry logic and exponential backoff
+
+    Args:
+        url: URL to fetch
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds between retries
+
+    Returns:
+        Parsed JSON data or None if all retries fail
+    """
+    delay = initial_delay
+
+    for attempt in range(max_retries):
+        try:
+            headers = {
+                'User-Agent': 'AWS-Glue-ETL-Job/1.0',
+                'Accept': 'application/json',
+                'Connection': 'close'
+            }
+
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=30) as response:
+                content = response.read().decode('utf-8')
+                return json.loads(content)
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Fetch attempt {attempt + 1} failed: {str(e)}, retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+            else:
+                print(f"Failed to fetch {url} after {max_retries} attempts: {str(e)}")
+                return None
+
+    return None
+
+
+def save_json_to_s3(data, s3_path):
+    """
+    Save JSON data to S3 for lineage tracking
+
+    Args:
+        data: Python dict/list to serialize as JSON
+        s3_path: Complete S3 URL like "s3://bucket/raw/dataset/run_id=xxx/file.json"
+
+    Returns:
+        S3 path where file was saved
+    """
+    bucket, key = _extract_s3_path_parts(s3_path)
+
+    json_content = json.dumps(data, indent=2)
+
+    s3_client = boto3.client('s3')
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=json_content.encode('utf-8'),
+        ContentType='application/json'
+    )
+
+    print(f"Saved JSON to {s3_path}")
+    return s3_path
 
 
 def download_and_extract(source_url, raw_s3_path, file_table_mapping, max_retries=3):

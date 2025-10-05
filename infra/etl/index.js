@@ -11,6 +11,7 @@ const { FdaAllNdcStack } = require("./datasets/fda-all-ndc/FdaAllNdcStack");
 const { RxnormStack } = require("./datasets/rxnorm/RxnormStack");
 const { RxnormSplMappingsStack } = require("./datasets/rxnorm-spl-mappings/RxnormSplMappingsStack");
 const { RxClassStack } = require("./datasets/rxclass/RxClassStack");
+const { RxclassDrugMembersStack } = require("./datasets/rxclass-drug-members/RxclassDrugMembersStack");
 const { RxnormProductsStack } = require("./datasets/rxnorm-products/RxnormProductsStack");
 
 const app = new cdk.App();
@@ -69,6 +70,13 @@ const rxClassStack = new RxClassStack(app, "pp-dw-etl-rxclass", {
   description: "RxClass ETL pipeline - NLM RxNav drug classification API"
 });
 rxClassStack.addDependency(etlCoreStack);
+
+const rxclassDrugMembersStack = new RxclassDrugMembersStack(app, "pp-dw-etl-rxclass-drug-members", {
+  env,
+  etlCoreStack,
+  description: "RxClass Drug Members ETL pipeline - Drug relationships for each RxClass classification"
+});
+rxclassDrugMembersStack.addDependency(etlCoreStack);
 
 const rxnormProductsStack = new RxnormProductsStack(app, "pp-dw-etl-rxnorm-products", {
   env,
