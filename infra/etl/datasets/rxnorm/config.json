@@ -3,31 +3,92 @@
   "source_url_pattern": "https://download.nlm.nih.gov/umls/kss/rxnorm/RxNorm_full_{date}.zip",
   "description": "RxNORM normalized drug nomenclature with RRF tables",
   "data_size_category": "xlarge",
-  "default_release_date": "09022025",
   "schedule": {
     "enabled": false,
     "expression": "cron(0 2 5 * ? *)",
     "description": "Monthly on the 5th (after RxNorm release on 1st Monday)"
   },
-  "data_quality": {
-    "critical_null_threshold": 0.05,
-    "required_columns": {
-      "rxnconso": ["rxcui", "str", "tty"],
-      "rxnsat": ["rxcui", "atn", "atv"],
-      "rxnrel": ["rxcui1", "rxcui2", "rel"]
-    },
-    "expected_record_count_min": {
-      "rxnconso": 100000,
-      "rxnsat": 500000,
-      "rxnrel": 200000
-    }
+  "rrf_columns": {
+    "RXNCONSO": [
+      "RXCUI",
+      "LAT",
+      "TS",
+      "LUI",
+      "STT",
+      "SUI",
+      "ISPREF",
+      "RXAUI",
+      "SAUI",
+      "SCUI",
+      "SDUI",
+      "SAB",
+      "TTY",
+      "CODE",
+      "STR",
+      "SRL",
+      "SUPPRESS",
+      "CVF"
+    ],
+    "RXNSAT": [
+      "RXCUI",
+      "LUI",
+      "SUI",
+      "RXAUI",
+      "STYPE",
+      "CODE",
+      "ATUI",
+      "SATUI",
+      "ATN",
+      "SAB",
+      "ATV",
+      "SUPPRESS",
+      "CVF"
+    ],
+    "RXNREL": [
+      "RXCUI1",
+      "RXAUI1",
+      "STYPE1",
+      "REL",
+      "RXCUI2",
+      "RXAUI2",
+      "STYPE2",
+      "RELA",
+      "RUI",
+      "SRUI",
+      "SAB",
+      "SL",
+      "RG",
+      "DIR",
+      "SUPPRESS",
+      "CVF"
+    ],
+    "RXNSTY": ["RXCUI", "TUI", "STN", "STY", "ATUI", "CVF"],
+    "RXNCUI": ["RXCUI1", "RXCUI2"],
+    "RXNATOMARCHIVE": [
+      "RXAUI",
+      "AUI",
+      "STR",
+      "ARCHIVE_TIMESTAMP",
+      "CREATED_TIMESTAMP",
+      "UPDATED_TIMESTAMP",
+      "CODE",
+      "IS_BRAND",
+      "LAT",
+      "LAST_RELEASED",
+      "SAUI",
+      "VSAB",
+      "RXCUI",
+      "SAB",
+      "TTY",
+      "MERGED_TO_RXCUI"
+    ]
   },
   "tables": {
-    "rxnconso": "Main concepts and names",
-    "rxnrel": "Relationships between concepts",
-    "rxnsat": "Additional attributes including NDC mappings",
-    "rxnsty": "Semantic types",
-    "rxncui": "CUI change/history tracking",
-    "rxnatomarchive": "Historical atom archive for tracking changes"
+    "RXNCONSO": "Main concepts and names",
+    "RXNREL": "Relationships between concepts",
+    "RXNSAT": "Additional attributes including NDC mappings",
+    "RXNSTY": "Semantic types",
+    "RXNCUI": "CUI change/history tracking",
+    "RXNATOMARCHIVE": "Historical atom archive for tracking changes"
   }
 }

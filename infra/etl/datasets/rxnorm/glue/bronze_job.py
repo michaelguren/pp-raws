@@ -6,7 +6,6 @@ transforms to Bronze layer with multiple RRF tables
 import sys
 import posixpath
 import tempfile
-import shutil
 import time
 import zipfile
 from datetime import datetime, date, timedelta
@@ -17,7 +16,7 @@ from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
 from awsglue.job import Job  # type: ignore[import-not-found]
-from pyspark.sql.functions import lit, col, when, trim  # type: ignore[import-not-found]
+from pyspark.sql.functions import lit  # type: ignore[import-not-found]
 from etl_runtime_utils import _extract_s3_path_parts  # type: ignore[import-not-found]
 
 # ============================================================================
@@ -105,60 +104,6 @@ def authenticate_umls(api_key, download_url):
     return service_ticket
 
 
-def apply_column_mapping(df, column_mapping):
-    """Apply column name mapping to DataFrame"""
-    for old_col, new_col in column_mapping.items():
-        if old_col in df.columns:
-            df = df.withColumnRenamed(old_col, new_col)
-    return df
-
-
-def clean_rrf_data(df):
-    """Clean RRF data - trim whitespace and handle nulls"""
-    for col_name in df.columns:
-        df = df.withColumn(col_name,
-                          when(trim(col(col_name)) == "", None)
-                          .otherwise(trim(col(col_name))))
-    return df
-
-
-# Column mappings for each RRF table
-COLUMN_MAPPINGS = {
-    'RXNCONSO': {
-        "RXCUI": "rxcui", "LAT": "language", "TS": "term_status", "LUI": "lui",
-        "STT": "string_type", "SUI": "sui", "ISPREF": "is_preferred", "RXAUI": "rxaui",
-        "SAUI": "source_aui", "SCUI": "source_cui", "SDUI": "source_dui", "SAB": "source",
-        "TTY": "tty", "CODE": "code", "STR": "name", "SRL": "source_restriction",
-        "SUPPRESS": "suppress", "CVF": "cvf"
-    },
-    'RXNSAT': {
-        "RXCUI": "rxcui", "LUI": "lui", "SUI": "sui", "RXAUI": "rxaui",
-        "STYPE": "stype", "CODE": "code", "ATUI": "atui", "SATUI": "satui",
-        "ATN": "attribute_name", "SAB": "source", "ATV": "attribute_value",
-        "SUPPRESS": "suppress", "CVF": "cvf"
-    },
-    'RXNREL': {
-        "RXCUI1": "rxcui1", "RXAUI1": "rxaui1", "STYPE1": "stype1", "REL": "relationship",
-        "RXCUI2": "rxcui2", "RXAUI2": "rxaui2", "STYPE2": "stype2", "RELA": "rela",
-        "RUI": "rui", "SRUI": "srui", "SAB": "source", "SL": "source_label",
-        "RG": "rg", "DIR": "dir", "SUPPRESS": "suppress", "CVF": "cvf"
-    },
-    'RXNSTY': {
-        "RXCUI": "rxcui", "TUI": "tui", "STN": "stn", "STY": "sty",
-        "ATUI": "atui", "CVF": "cvf"
-    },
-    'RXNCUI': {
-        "RXCUI1": "rxcui1", "RXCUI2": "rxcui2"
-    },
-    'RXNATOMARCHIVE': {
-        "RXAUI": "rxaui", "AUI": "aui", "STR": "str", "ARCHIVE_TIMESTAMP": "archive_timestamp",
-        "CREATED_TIMESTAMP": "created_timestamp", "UPDATED_TIMESTAMP": "updated_timestamp",
-        "CODE": "code", "IS_BRAND": "is_brand", "LAT": "lat", "LAST_RELEASED": "last_released",
-        "SAUI": "saui", "VSAB": "vsab", "RXCUI": "rxcui", "SAB": "sab",
-        "TTY": "tty", "MERGED_TO_RXCUI": "merged_to_rxcui"
-    }
-}
-
 # ============================================================================
 # INITIALIZATION
 # ============================================================================
@@ -166,10 +111,16 @@ COLUMN_MAPPINGS = {
 # Parse job arguments
 required_args = ['JOB_NAME', 'bucket_name', 'dataset', 'bronze_database',
                  'raw_path', 'bronze_path', 'compression_codec',
-                 'umls_api_secret', 'tables_to_process']
+                 'umls_api_secret', 'tables_to_process', 'rrf_columns',
+                 'source_url_pattern', 'default_release_date']
 optional_args = ['release_date']
 
 args = getResolvedOptions(sys.argv, required_args)
+
+# Parse RRF column definitions from JSON argument (matches factory pattern)
+import json
+RRF_COLUMNS = json.loads(args['rrf_columns'])
+print(f"Loaded RRF column definitions for {len(RRF_COLUMNS)} tables")
 
 # Handle optional release_date parameter
 if '--release_date' in sys.argv:
@@ -321,8 +272,8 @@ try:
         if table_name not in tables_to_process:
             continue
 
-        if table_name not in COLUMN_MAPPINGS:
-            print(f"  Warning: No column mapping for {table_name}, skipping")
+        if table_name not in RRF_COLUMNS:
+            print(f"  Warning: No column definition for {table_name}, skipping")
             continue
 
         print(f"\n  Processing: {table_name}")
@@ -343,17 +294,15 @@ try:
 
         print(f"    Loaded: {row_count:,} records")
 
-        # Apply column names and mapping
-        column_mapping = COLUMN_MAPPINGS[table_name]
-        old_columns = list(column_mapping.keys())
+        # Apply original RRF column names (no renaming, preserve source names)
+        rrf_columns = RRF_COLUMNS[table_name]
 
-        for i, old_col in enumerate(old_columns):
+        for i, col_name in enumerate(rrf_columns):
             if i < len(df.columns):
-                df = df.withColumnRenamed(f"_c{i}", old_col)
+                df = df.withColumnRenamed(f"_c{i}", col_name)
 
-        df = df.select(*old_columns)
-        df = apply_column_mapping(df, column_mapping)
-        df = clean_rrf_data(df)
+        # Select only defined columns (preserve raw data exactly as-is)
+        df = df.select(*rrf_columns)
 
         # Add metadata
         df = df.withColumn("meta_run_id", lit(run_id)) \
