@@ -112,8 +112,7 @@ def authenticate_umls(api_key, download_url):
 required_args = ['JOB_NAME', 'bucket_name', 'dataset', 'bronze_database',
                  'raw_path', 'bronze_path', 'compression_codec',
                  'umls_api_secret', 'tables_to_process', 'rrf_columns',
-                 'source_url_pattern', 'default_release_date']
-optional_args = ['release_date']
+                 'source_url_pattern']
 
 args = getResolvedOptions(sys.argv, required_args)
 
@@ -122,14 +121,7 @@ import json
 RRF_COLUMNS = json.loads(args['rrf_columns'])
 print(f"Loaded RRF column definitions for {len(RRF_COLUMNS)} tables")
 
-# Handle optional release_date parameter
-if '--release_date' in sys.argv:
-    optional = getResolvedOptions(sys.argv, optional_args)
-    release_date = optional['release_date']
-    print(f"Using provided release date: {release_date}")
-else:
-    release_date = get_latest_rxnorm_release_date()
-    print(f"Latest release date: {release_date}")
+release_date = get_latest_rxnorm_release_date()
 
 # Initialize Spark/Glue
 sc = SparkContext()
@@ -309,7 +301,8 @@ try:
                .withColumn("meta_release_date", lit(release_date))
 
         # Write to bronze (multi-table dataset: bronze/{dataset}/{table}/)
-        output_path = posixpath.join(bronze_dataset_path, table_name.lower())
+        # Use uppercase table names to match config.json and crawler expectations
+        output_path = posixpath.join(bronze_dataset_path, table_name)
         df.write.mode("overwrite").option("compression", args['compression_codec']).parquet(output_path)
 
         print(f"    Written: {output_path}")

@@ -85,7 +85,6 @@ class RxnormStack extends cdk.Stack {
         "--umls_api_secret": "umls-api-key",
         "--tables_to_process": bronzeTables.map(t => t.toUpperCase()).join(","),
         "--source_url_pattern": datasetConfig.source_url_pattern,
-        "--default_release_date": datasetConfig.default_release_date,
         "--rrf_columns": JSON.stringify(datasetConfig.rrf_columns),
         "--extra-py-files": `s3://${bucketName}/etl/shared/runtime/https_zip/etl_runtime_utils.py`,
         ...etlUtils.glue_defaults.default_arguments,

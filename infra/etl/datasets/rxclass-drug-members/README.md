@@ -185,27 +185,115 @@ WHERE dm.rxcui = '2555'  -- cisplatin
 
 ---
 
-## Known Issues & Future Work
+## Known Issues & Proposed Architecture Change
 
-### 🐛 Issues to Fix
+### 🚨 Critical Issue: Incomplete Data Due to API Approach
 
-1. **VA classifications failing** (only 1.6% success)
-   - Need to research correct VA API parameters
-   - May need different `rela` or `relaSource`
+**Root Cause Analysis (2025-10-06)**:
 
-2. **CHEM, PE low success rates** (2.5%, 6.8%)
-   - Verify parameter mappings
-   - Check if many classes legitimately have no members
+The current **class-first approach** has fundamental limitations:
 
-3. **TC, CVX, STRUCT, DISPOS, PK all failing** (0% success)
-   - Need to research correct API parameters for these class types
-   - May need to consult RxNav API documentation
+1. **Missing `rela` parameters** - Many class types require specific `rela` values:
+   - DISEASE: needs `may_treat` (currently missing → only 18% success)
+   - VA: needs `has_VAClass` (currently missing → only 1.6% success)
+   - DISPOS, PK, etc.: need unknown rela values (0% success)
+
+2. **Multiple relationships per class** - Some class types have MULTIPLE valid `rela` values:
+   - DISEASE supports: `may_treat`, `CI_with`, `may_prevent`, `may_diagnose`
+   - Current approach can only query ONE rela per class
+   - Would need 4+ API calls per DISEASE class for complete data
+
+3. **Incomplete coverage** - Even with fixes:
+   - 22,430 classes × 1-4 API calls = **30K-90K API calls needed**
+   - Still missing relationships we don't know exist
+   - Current result: only **21,785 total relationships**
+
+**Example**: Cisplatin (RXCUI 2555) has 35+ class relationships, but class-first approach only captures ~3-5.
+
+---
+
+## ✅ Recommended Solution: Drug-First Approach
+
+### Why Switch to `getClassByRxNormDrugId` API?
+
+**API Endpoint**: `https://rxnav.nlm.nih.gov/REST/rxclass/class/byRxcui.json?rxcui={rxcui}`
+
+**Single API Call Returns ALL Relationships**:
+```json
+{
+  "rxclassDrugInfoList": {
+    "rxclassDrugInfo": [
+      {
+        "minConcept": {"rxcui": "2555", "name": "cisplatin", "tty": "IN"},
+        "rxclassMinConceptItem": {"classId": "N0000175413", "className": "Platinum-based Drug", "classType": "EPC"},
+        "rela": "has_epc",
+        "relaSource": "DAILYMED"
+      },
+      {
+        "minConcept": {"rxcui": "2555", "name": "cisplatin", "tty": "IN"},
+        "rxclassMinConceptItem": {"classId": "D003920", "className": "Diabetes Mellitus", "classType": "DISEASE"},
+        "rela": "may_treat",
+        "relaSource": "MEDRT"
+      },
+      // ... 33+ more relationships (all rela types, all classes)
+    ]
+  }
+}
+```
+
+### Comparison: Class-First vs Drug-First
+
+| Metric | Class-First (Current) | Drug-First (Proposed) | Winner |
+|--------|----------------------|----------------------|---------|
+| **API Calls** | 22,430 classes × 1-4 calls = 30K-90K | ~20,000 drugs × 1 call = 20K | ✅ Drug-First |
+| **Data Completeness** | ~21K relationships (incomplete) | ~500K-1M relationships (complete) | ✅ Drug-First |
+| **Code Complexity** | Complex `rela` parameter mapping | No parameter mapping needed | ✅ Drug-First |
+| **Runtime** | 25 min (incomplete data) | ~67 min (complete data) | ✅ Drug-First |
+| **Missing Relationships** | VA, DISEASE (CI_with), unknown relas | None - API returns all | ✅ Drug-First |
+| **Cost** | $0.44/run | ~$0.50/run | ≈ Same |
+
+### Implementation Plan
+
+**Source Data**: `pp_dw_silver.rxnorm_products` (~20K products: SCD, SBD, GPCK, BPCK)
+
+**Processing**:
+1. Read RXCUIs from `rxnorm_products` table
+2. For each RXCUI, call `getClassByRxNormDrugId` API
+3. Parse `rxclassDrugInfoList.rxclassDrugInfo[]` array
+4. Extract: class_id, rxcui, name, tty, rela, rela_source
+5. Write to bronze layer (same schema as current)
+
+**Benefits**:
+- ✅ **FEWER API calls** (20K vs 30K-90K)
+- ✅ **10-50x more data** (complete relationships)
+- ✅ **Simpler code** (no rela parameter logic)
+- ✅ **Future-proof** (automatically captures new relationship types)
+- ✅ **Same output schema** (no breaking changes)
+
+**Estimated Results**:
+- Total relationships: **500K-1M** (vs current 21K)
+- Runtime: ~67 minutes (vs current 25 min incomplete)
+- Cost: ~$0.50/run (vs current $0.44/run)
+
+---
+
+### 🐛 Issues to Fix (Class-First Approach - Current)
+
+1. **DISEASE missing rela** - Needs `may_treat`, `CI_with`, `may_prevent`, `may_diagnose`
+2. **VA missing rela** - Needs `has_VAClass` or `has_VAClass_extended`
+3. **Multiple calls needed** - Each DISEASE class needs 4+ API calls for complete data
+4. **Unknown class types** - TC, CVX, STRUCT, DISPOS, PK may need undocumented parameters
+
+**Note**: These issues are SOLVED by switching to drug-first approach.
+
+---
 
 ### 📋 Future Enhancements
 
-1. **Add reverse lookup dataset**: `rxnorm-drug-classes`
-   - Use `getClassByRxNormDrugId` API
-   - Enable fast "given RXCUI, show all classes" queries
+1. **Switch to drug-first approach** ⭐ **HIGHEST PRIORITY**
+   - Solves all data completeness issues
+   - Simpler implementation
+   - Better performance
 
 2. **Historical tracking**
    - Keep previous run_id data to track when drugs added/removed from classes
@@ -216,9 +304,8 @@ WHERE dm.rxcui = '2555'  -- cisplatin
    - Automated quality checks for expected member counts
 
 4. **Performance optimization**
-   - Current: 25 minutes for 22k classes (already distributed)
-   - Investigate if DataFrame partitioning can be improved
-   - Consider caching API responses for re-runs
+   - Investigate optimal API rate (currently 5 calls/sec with 0.2s delay)
+   - Consider parallel processing strategies
 
 ---
 
@@ -268,4 +355,4 @@ ORDER BY name;
 - [ETL Patterns](/infra/etl/CLAUDE.md)
 
 **Last Updated:** 2025-10-06
-**Status:** Production (with known issues in VA, TC, CVX, STRUCT, DISPOS, PK mappings)
+**Status:** Production (with known data completeness issues - see "Recommended Solution: Drug-First Approach" above)
