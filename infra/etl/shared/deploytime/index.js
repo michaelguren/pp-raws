@@ -10,7 +10,7 @@ class EtlDeployUtils {
       version: "5.0",
       python_version: "3",
       timeout_minutes: 30,
-      max_retries: 1,
+      max_retries: 0,  // No retries - monthly batch jobs should fail fast for debugging
       default_arguments: {
         "--enable-metrics": "true",
         "--enable-continuous-cloudwatch-log": "true",
