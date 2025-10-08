@@ -1,5 +1,5 @@
 """
-FDA GOLD Layer ETL Job - Combine NSDE and CDER Data
+FDA SILVER Layer ETL Job - Combine NSDE and CDER Data
 Creates unified fda_all_ndc table with INNER JOIN of both datasets
 Only includes NDCs present in both NSDE and CDER data
 """
@@ -14,7 +14,7 @@ from pyspark.sql.functions import lit, col, when, substring, expr, split, lpad, 
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'dataset',
-    'bronze_database', 'gold_database', 'gold_base_path',
+    'bronze_database', 'silver_database', 'silver_base_path',
     'compression_codec', 'crawler_name',
     'nsde_table', 'cder_products_table', 'cder_packages_table'
 ])
@@ -37,8 +37,8 @@ run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 # Get configuration from job arguments
 dataset = args['dataset']
 bronze_database = args['bronze_database']
-gold_database = args['gold_database']
-gold_path = args['gold_base_path']
+silver_database = args['silver_database']
+silver_path = args['silver_base_path']
 crawler_name = args['crawler_name']
 
 # Get table names from source dataset configs
@@ -46,10 +46,10 @@ nsde_table = args['nsde_table']
 cder_products_table = args['cder_products_table']
 cder_packages_table = args['cder_packages_table']
 
-print(f"Starting GOLD ETL for {dataset} (INNER JOIN NSDE + CDER)")
+print(f"Starting SILVER ETL for {dataset} (INNER JOIN NSDE + CDER)")
 print(f"Bronze database: {bronze_database}")
-print(f"Gold database: {gold_database}")
-print(f"Gold path: {gold_path}")
+print(f"Silver database: {silver_database}")
+print(f"Silver path: {silver_path}")
 print(f"Source tables: {nsde_table}, {cder_products_table}, {cder_packages_table}")
 print(f"Run ID: {run_id}")
 print(f"Mode: overwrite (kill-and-fill)")
@@ -143,7 +143,7 @@ try:
     # Step 4: INNER JOIN with NSDE (only NDCs present in both datasets)
     print("Performing INNER JOIN with NSDE data...")
 
-    gold_df = cder_joined.join(
+    silver_df = cder_joined.join(
         nsde_df.select("ndc_11", "proprietary_name", "dosage_form", "marketing_category",
                       "application number or monograph id", "product_type", "marketing_start_date",
                       "marketing_end_date", "billing_unit"),
@@ -195,36 +195,36 @@ try:
         col("meta_run_id")
     )
 
-    print(f"Final GOLD records (INNER JOIN): {gold_df.count()}")
-    print(f"Final GOLD columns: {gold_df.columns}")
+    print(f"Final SILVER records (INNER JOIN): {silver_df.count()}")
+    print(f"Final SILVER columns: {silver_df.columns}")
 
-    # Step 5: Write to GOLD layer
-    print(f"Writing GOLD data to: {gold_path}")
+    # Step 5: Write to SILVER layer
+    print(f"Writing SILVER data to: {silver_path}")
 
     # Convert to DynamicFrame for writing
     from awsglue.dynamicframe import DynamicFrame  # type: ignore[import-not-found]
-    gold_dynamic_frame = DynamicFrame.fromDF(
-        gold_df,
+    silver_dynamic_frame = DynamicFrame.fromDF(
+        silver_df,
         glueContext,
         dataset
     )
 
     # Write to S3 (kill-and-fill)
     glueContext.write_dynamic_frame.from_options(
-        frame=gold_dynamic_frame,
+        frame=silver_dynamic_frame,
         connection_type="s3",
-        connection_options={"path": gold_path},
+        connection_options={"path": silver_path},
         format="parquet",
         transformation_ctx=f"write_{dataset}"
     )
 
-    print("GOLD data written successfully")
+    print("SILVER data written successfully")
     print(f"Note: Run crawler manually via console if schema changes are needed: {crawler_name}")
 
-    print("GOLD ETL completed successfully")
+    print("SILVER ETL completed successfully")
 
 except Exception as e:
-    print(f"GOLD ETL failed: {str(e)}")
+    print(f"SILVER ETL failed: {str(e)}")
     raise e
 
 finally:

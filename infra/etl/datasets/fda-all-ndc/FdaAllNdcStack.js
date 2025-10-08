@@ -4,9 +4,9 @@ const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
 const path = require("path");
 
 /**
- * FDA All NDC Gold Layer Stack
+ * FDA All NDC Silver Layer Stack
  * Combines NSDE and CDER data with custom transformation logic
- * Gold jobs are dataset-specific and don't use the factory pattern
+ * Silver jobs are dataset-specific and don't use the factory pattern
  */
 class FdaAllNdcStack extends cdk.Stack {
   constructor(scope, id, props) {
@@ -26,7 +26,7 @@ class FdaAllNdcStack extends cdk.Stack {
 
     // Compute database names from prefix
     const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
-    const goldDatabase = `${etlConfig.database_prefix}_gold`;
+    const silverDatabase = `${etlConfig.database_prefix}_silver`;
     const dataset = datasetConfig.dataset;
 
     // Get worker configuration based on data size category
@@ -42,9 +42,9 @@ class FdaAllNdcStack extends cdk.Stack {
     const cderProductsTable = cderTableNames.find(name => name.includes('products'));
     const cderPackagesTable = cderTableNames.find(name => name.includes('packages'));
 
-    // Build paths using convention - GOLD layer paths
-    const goldBasePath = `s3://${bucketName}/gold/${dataset}/`;
-    const goldScriptPath = `s3://${bucketName}/etl/datasets/${dataset}/glue/gold_job.py`;
+    // Build paths using convention - SILVER layer paths
+    const silverBasePath = `s3://${bucketName}/silver/${dataset}/`;
+    const silverScriptPath = `s3://${bucketName}/etl/datasets/${dataset}/glue/silver_job.py`;
 
     // Deploy Glue script to S3
     new s3deploy.BucketDeployment(this, 'DeployGlueScript', {
@@ -54,15 +54,15 @@ class FdaAllNdcStack extends cdk.Stack {
       retainOnDelete: false
     });
 
-    // Create GOLD Glue Job
-    const goldJob = new glue.CfnJob(this, 'GoldJob', {
-      name: `${etlConfig.etl_resource_prefix}-gold-${dataset}`,
-      description: `GOLD layer job for ${dataset} - ${datasetConfig.description}`,
+    // Create SILVER Glue Job
+    const silverJob = new glue.CfnJob(this, 'SilverJob', {
+      name: `${etlConfig.etl_resource_prefix}-silver-${dataset}`,
+      description: `SILVER layer job for ${dataset} - ${datasetConfig.description}`,
       role: glueRole.roleArn,
 
       command: {
         name: 'glueetl',
-        scriptLocation: goldScriptPath,
+        scriptLocation: silverScriptPath,
         pythonVersion: etlConfig.glue_defaults.python_version
       },
 
@@ -87,10 +87,10 @@ class FdaAllNdcStack extends cdk.Stack {
         '--dataset': dataset,
         '--bucket_name': bucketName,
         '--bronze_database': bronzeDatabase,
-        '--gold_database': goldDatabase,
+        '--silver_database': silverDatabase,
 
         // Pre-computed paths
-        '--gold_base_path': goldBasePath,
+        '--silver_base_path': silverBasePath,
 
         // Source table names from dataset configs
         '--nsde_table': nsdeTableName,
@@ -99,23 +99,23 @@ class FdaAllNdcStack extends cdk.Stack {
 
         // Compression and performance settings
         '--compression_codec': 'ZSTD',
-        '--crawler_name': `${etlConfig.etl_resource_prefix}-gold-${dataset}-crawler`,
+        '--crawler_name': `${etlConfig.etl_resource_prefix}-silver-${dataset}-crawler`,
 
         // Additional job-specific arguments
         '--enable-auto-scaling': 'true'
       }
     });
 
-    // Create Crawler for GOLD layer
-    const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
-      name: `${etlConfig.etl_resource_prefix}-gold-${dataset}-crawler`,
-      description: `Crawler for GOLD ${dataset} parquet files`,
+    // Create Crawler for SILVER layer
+    const silverCrawler = new glue.CfnCrawler(this, 'SilverCrawler', {
+      name: `${etlConfig.etl_resource_prefix}-silver-${dataset}-crawler`,
+      description: `Crawler for SILVER ${dataset} parquet files`,
       role: glueRole.roleArn,
-      databaseName: goldDatabase,
+      databaseName: silverDatabase,
 
       targets: {
         s3Targets: [{
-          path: goldBasePath
+          path: silverBasePath
         }]
       },
 
@@ -139,9 +139,9 @@ class FdaAllNdcStack extends cdk.Stack {
     }
 
     // Export useful properties
-    this.goldJob = goldJob;
-    this.goldCrawler = goldCrawler;
-    this.goldPath = goldBasePath;
+    this.silverJob = silverJob;
+    this.silverCrawler = silverCrawler;
+    this.silverPath = silverBasePath;
   }
 }
 

@@ -62,9 +62,9 @@ etl/
 ## Naming Conventions
 
 **AWS Resources**: `{prefix}-{layer}-{dataset}[-{table}][-crawler]`
-- Glue Jobs: `pp-dw-bronze-fda-nsde`, `pp-dw-gold-fda-all-ndc`
+- Glue Jobs: `pp-dw-bronze-fda-nsde`, `pp-dw-silver-fda-all-ndc`
 - Crawlers: `pp-dw-bronze-fda-products-crawler`
-- Databases: `pp_dw_bronze`, `pp_dw_gold` (underscores, not hyphens)
+- Databases: `pp_dw_bronze`, `pp_dw_silver` (underscores, not hyphens)
 - Glue Tables: Hyphens in `file_table_mapping` → underscores (`fda-products` → `fda_products`)
 
 **S3 Paths**:
@@ -73,7 +73,7 @@ s3://pp-dw-{account}/
 ├── raw/{dataset}/run_id={timestamp}/
 ├── bronze/{dataset}/              # Single-table datasets
 ├── bronze/{dataset}/{table}/      # Multi-table datasets
-├── gold/{dataset}/                # Gold layer tables
+├── silver/{dataset}/              # Silver layer tables
 └── etl/datasets/{dataset}/glue/   # Dataset-specific scripts
 ```
 
@@ -90,7 +90,7 @@ const factory = new EtlStackFactory(this, props);
 
 factory.createDatasetInfrastructure({
   datasetConfig,
-  options: { skipGoldJob: true }  // Bronze only
+  options: { skipSilverJob: true }  // Bronze only
 });
 ```
 - Uses shared `bronze_http_job.py` and `etl_runtime_utils.py`
@@ -108,7 +108,7 @@ Use for datasets with unique formats, authentication, or processing requirements
   - **APIs**: REST/GraphQL sources requiring pagination, auth tokens
   - **Binary formats**: Parquet, Avro, or proprietary formats
 
-**Gold Stacks** (always custom, no factory):
+**Silver Stacks** (always custom, no factory):
 - Read source dataset configs at deploy time for table names
 - Pass table names as Glue job arguments
 - Custom transformation logic in `glue/*.py`
@@ -131,10 +131,10 @@ Use for datasets with unique formats, authentication, or processing requirements
 - Single-table datasets write to `bronze/{dataset}/`, multi-table to `bronze/{dataset}/{table}/`
 - Raw layer preserves complete lineage with run_id partitions
 
-**Gold Layer** (custom transformations):
+**Silver Layer** (custom transformations):
 - Read multiple bronze tables from Glue catalog
 - Join/transform/aggregate as needed
-- Write to `s3://.../gold/{dataset}/` as Parquet/ZSTD
+- Write to `s3://.../silver/{dataset}/` as Parquet/ZSTD
 - Crawler updates Glue catalog
 
 ## Adding New Datasets
@@ -150,8 +150,8 @@ Use for datasets with unique formats, authentication, or processing requirements
 3. Create custom `datasets/{dataset}/glue/bronze_job.py` with specialized logic
 4. Add to `index.js`
 
-**Gold** (always custom):
+**Silver** (always custom):
 1. Create `datasets/{dataset}/config.json` with source dependencies
 2. Create custom `{Dataset}Stack.js` (read source configs, pass table names)
-3. Create `glue/gold_job.py` with transformation logic
+3. Create `glue/silver_job.py` with transformation logic
 4. Add to `index.js`
