@@ -6,8 +6,9 @@ const deployUtils = require("../../shared/deploytime");
 
 /**
  * RxClass Drug Members ETL Stack - Pattern B (Custom API Source)
- * Reads rxclass bronze table and fetches drug members for each class via RxNav API
- * Uses custom bronze job for API-specific logic (parameter mapping, rate limiting)
+ * Drug-first approach: Reads rxnorm_products silver table and fetches ALL class relationships
+ * for each drug via RxNav byRxcui API (single call returns complete data per drug)
+ * Uses custom bronze job for API-specific logic (rate limiting for NLM compliance)
  */
 class RxclassDrugMembersStack extends cdk.Stack {
   constructor(scope, id, props) {
@@ -36,8 +37,8 @@ class RxclassDrugMembersStack extends cdk.Stack {
       destinationKeyPrefix: `etl/datasets/${dataset}/glue/`,
     });
 
-    // Bronze Glue job - Custom API-based data collection
-    // Note: Uses custom script because it reads from rxclass bronze table then calls APIs
+    // Bronze Glue job - Custom API-based data collection (drug-first approach)
+    // Note: Uses custom script because it reads from rxnorm_products silver table then calls APIs
     const bronzeJob = new glue.CfnJob(this, "BronzeJob", {
       name: resourceNames.bronzeJob,
       role: glueRole.roleArn,
@@ -55,12 +56,13 @@ class RxclassDrugMembersStack extends cdk.Stack {
         // Dataset-specific arguments
         "--dataset": dataset,
         "--bronze_database": resourceNames.bronzeDatabase,
+        "--silver_database": "pp_dw_silver",
         "--raw_path": paths.raw,
         "--bronze_path": paths.bronze,
         "--compression_codec": "zstd",
-        // Dependency: rxclass bronze table to read from
-        "--rxclass_table": datasetConfig.dependencies.rxclass.bronze_table,
-        // API base URL
+        // Dependency: rxnorm_products silver table to read from
+        "--rxnorm_products_table": datasetConfig.dependencies.rxnorm_products.table,
+        // API base URL (byRxcui endpoint for drug-first approach)
         "--api_base_url": datasetConfig.api_base_url,
         // Shared runtime utilities
         "--extra-py-files": `s3://${bucketName}/etl/shared/runtime/https_zip/etl_runtime_utils.py`,
@@ -91,7 +93,7 @@ class RxclassDrugMembersStack extends cdk.Stack {
     // Outputs
     new cdk.CfnOutput(this, "BronzeJobName", {
       value: resourceNames.bronzeJob,
-      description: "RxClass Drug Members Bronze Job Name (API collection)",
+      description: "RxClass Drug Members Bronze Job Name (Drug-first API collection)",
     });
 
     new cdk.CfnOutput(this, "BronzeCrawlerName", {
@@ -101,7 +103,12 @@ class RxclassDrugMembersStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "ApiBaseUrl", {
       value: datasetConfig.api_base_url,
-      description: "RxNav classMembers API endpoint",
+      description: "RxNav byRxcui API endpoint (drug-first approach)",
+    });
+
+    new cdk.CfnOutput(this, "SourceDependency", {
+      value: `pp_dw_silver.${datasetConfig.dependencies.rxnorm_products.table}`,
+      description: "Source silver table (RxNORM Products)",
     });
   }
 }

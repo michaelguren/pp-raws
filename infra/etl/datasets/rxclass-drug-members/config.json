@@ -1,29 +1,33 @@
 {
   "dataset": "rxclass-drug-members",
-  "description": "RxClass drug member relationships from NLM RxNav classMembers API",
+  "description": "RxClass drug classifications for all prescribable products from NLM RxNav byRxcui API (drug-first approach)",
   "data_size_category": "large",
   "schedule": {
     "enabled": true,
-    "expression": "cron(0 5 1 * ? *)",
-    "description": "Monthly on the 1st at 5 AM (2 hours after RxClass completes)"
+    "expression": "cron(0 5 5 * ? *)",
+    "description": "Monthly on the 5th at 5 AM (after RxNORM Products silver layer completes)"
   },
   "dependencies": {
-    "rxclass": {
-      "bronze_table": "rxclass",
-      "required_columns": ["class_id", "class_name", "class_type"]
+    "rxnorm_products": {
+      "layer": "silver",
+      "table": "rxnorm_products",
+      "required_columns": ["rxcui", "tty", "str"]
     }
   },
   "data_quality": {
     "critical_null_threshold": 0.01,
     "required_columns": ["class_id", "rxcui", "name"],
-    "expected_record_count_min": 10000
+    "expected_record_count_min": 500000
   },
-  "api_base_url": "https://rxnav.nlm.nih.gov/REST/rxclass/classMembers.json",
+  "api_base_url": "https://rxnav.nlm.nih.gov/REST/rxclass/class/byRxcui.json",
   "processing_notes": {
-    "method": "Distributed processing using Spark mapPartitions - each worker processes partition of classes in parallel",
-    "rate_limiting": "0.2s delay per API call to be respectful to NLM servers",
-    "data_format": "JSON API responses aggregated per class",
-    "parallelization": "10 workers (large), ~2,200 classes per worker for 22k total classes",
-    "estimated_runtime": "5-10 minutes for full dataset (vs 75-90 min sequential)"
+    "method": "Distributed processing using Spark mapPartitions - each worker processes partition of drugs in parallel",
+    "rate_limiting": "0.6s delay per API call to comply with NLM 20 req/sec per IP limit (10 workers share same NAT Gateway IP)",
+    "api_compliance": "10 workers × 1.67 req/sec = 16.7 req/sec total (safe buffer under 20 req/sec limit)",
+    "data_format": "JSON API responses - each drug returns ALL class relationships in single call",
+    "parallelization": "10 workers (large), ~2,100 drugs per worker for 21k total products",
+    "estimated_runtime": "21 minutes wall time (vs 25 min class-first incomplete approach)",
+    "data_completeness": "500K-1M relationships (vs 21K with class-first approach)",
+    "attribution": "This product uses publicly available data from the U.S. National Library of Medicine (NLM), National Institutes of Health, Department of Health and Human Services; NLM is not responsible for the product and does not endorse or recommend this or any other product."
   }
 }
