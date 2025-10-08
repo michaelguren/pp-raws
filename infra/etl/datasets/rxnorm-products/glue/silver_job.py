@@ -626,25 +626,24 @@ final_df = final_df.withColumn(
     F.coalesce(F.col('multi_ingredient'), F.lit(False))
 )
 
-# Select final columns in desired order (with lowercase aliases for base columns)
+# Select final columns with consistent rxnorm_ prefix
 final_df = final_df.select(
-    F.col('TTY').alias('tty'),
-    F.col('RXCUI').alias('rxcui'),
-    F.col('STR').alias('str'),
+    F.col('TTY').alias('rxnorm_tty'),
+    F.col('RXCUI').alias('rxnorm_rxcui'),
+    F.col('STR').alias('rxnorm_str'),
     'rxnorm_strength',
     'rxnorm_ingredient_names',
     'rxnorm_brand_names',
     'rxnorm_dosage_forms',
     'rxnorm_psn',
-    'sbdf_rxcui',
-    'sbdf_name',
-    'scdf_rxcui',
-    'scdf_name',
-    'sbd_rxcui',
-    'bpck_rxcui',
-    'multi_ingredient',
-    'created_at',
-    'updated_at'
+    F.col('sbdf_rxcui').alias('rxnorm_sbdf_rxcui'),
+    F.col('sbdf_name').alias('rxnorm_sbdf_name'),
+    F.col('scdf_rxcui').alias('rxnorm_scdf_rxcui'),
+    F.col('scdf_name').alias('rxnorm_scdf_name'),
+    F.col('sbd_rxcui').alias('rxnorm_sbd_rxcui'),
+    F.col('bpck_rxcui').alias('rxnorm_bpck_rxcui'),
+    F.col('multi_ingredient').alias('rxnorm_multi_ingredient')
+    # Skip created_at/updated_at - not needed in final output
 )
 
 print(f"Final rxnorm_products count: {final_df.count()}")
@@ -667,17 +666,8 @@ print("Silver table written successfully")
 # STEP 12: Run Crawler to Update Glue Catalog
 # ============================================================================
 
-print(f"Starting crawler: {args['crawler_name']}")
-
-import boto3  # type: ignore[import-not-found]
-glue_client = boto3.client('glue')
-
-try:
-    glue_client.start_crawler(Name=args['crawler_name'])
-    print(f"Crawler {args['crawler_name']} started successfully")
-except Exception as e:
-    print(f"Warning: Could not start crawler: {e}")
-    print("You may need to run the crawler manually")
+print(f"Note: Run crawler manually when needed: {args['crawler_name']}")
+print("Command: aws glue start-crawler --name " + args['crawler_name'])
 
 # ============================================================================
 # Complete Job

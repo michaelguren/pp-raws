@@ -116,11 +116,11 @@ try:
         products_filtered["dosage_form_name"].alias("fda_dosage_form"),
         products_filtered["application_number"].alias("fda_application_number"),
         products_filtered["dea_schedule"].alias("fda_dea_schedule"),
-        products_filtered["active_numerator_strength"],
-        products_filtered["active_ingredient_unit"],
+        products_filtered["active_numerator_strength"].alias("fda_active_numerator_strength"),
+        products_filtered["active_ingredient_unit"].alias("fda_active_ingredient_unit"),
 
         # Derive spl_id from product_id (part after underscore)
-        split(products_filtered["product_id"], "_").getItem(1).alias("spl_id"),
+        split(products_filtered["product_id"], "_").getItem(1).alias("fda_spl_id"),
 
         # Package info from CDER packages table
         packages_formatted["package_description"].alias("fda_package_description"),
@@ -132,7 +132,6 @@ try:
 
         # Default values
         lit("").alias("fda_billing_unit"),  # Not in CDER data
-        lit(False).alias("repackager"),     # Will be computed later if needed
 
         # Metadata
         packages_formatted["meta_run_id"]
@@ -172,11 +171,10 @@ try:
         # CDER-only fields
         col("fda_dea_schedule"),
         col("fda_package_description"),
-        col("active_numerator_strength"),
-        col("active_ingredient_unit"),
-        col("spl_id"),
+        col("fda_active_numerator_strength"),
+        col("fda_active_ingredient_unit"),
+        col("fda_spl_id"),
         col("fda_ndc_5"),
-        col("repackager"),
 
         # NSDE-prioritized dates and billing
         when(nsde_df["marketing_start_date"].isNotNull(),
@@ -219,7 +217,8 @@ try:
     )
 
     print("SILVER data written successfully")
-    print(f"Note: Run crawler manually via console if schema changes are needed: {crawler_name}")
+    print(f"Note: Run crawler manually when needed: {crawler_name}")
+    print("Command: aws glue start-crawler --name " + crawler_name)
 
     print("SILVER ETL completed successfully")
 

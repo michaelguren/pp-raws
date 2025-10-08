@@ -13,6 +13,7 @@ const { RxnormSplMappingsStack } = require("./datasets/rxnorm-spl-mappings/Rxnor
 const { RxClassStack } = require("./datasets/rxclass/RxClassStack");
 const { RxclassDrugMembersStack } = require("./datasets/rxclass-drug-members/RxclassDrugMembersStack");
 const { RxnormProductsStack } = require("./datasets/rxnorm-products/RxnormProductsStack");
+const { DrugProductCodesetsStack } = require("./datasets/drug-product-codesets/DrugProductCodesetsStack");
 
 const app = new cdk.App();
 
@@ -84,6 +85,13 @@ const rxnormProductsStack = new RxnormProductsStack(app, "pp-dw-etl-rxnorm-produ
   description: "RxNORM Products Silver Layer - Prescribable drug products from RxNORM bronze"
 });
 rxnormProductsStack.addDependency(etlCoreStack);
+
+const drugProductCodesetsStack = new DrugProductCodesetsStack(app, "pp-dw-etl-drug-product-codesets", {
+  env,
+  etlCoreStack,
+  description: "Drug Product Codesets Gold Layer - Combined FDA NDC and RxNORM product data"
+});
+drugProductCodesetsStack.addDependency(etlCoreStack);
 
 // Add tags to all ETL stacks
 cdk.Tags.of(app).add("Project", "pp-dw");
