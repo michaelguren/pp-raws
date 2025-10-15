@@ -1,6 +1,12 @@
 """
 Silver RxNORM NDC Mapping Job - Extract and validate NDC mappings from RXNSAT
-Reads bronze RXNSAT and RXNCONSO tables, filters for NDC attributes, validates formats
+
+Reads bronze RXNSAT and RXNCONSO tables, filters for SAB='RXNORM' NDC attributes.
+Per RxNORM documentation (Section 6.0), SAB='RXNORM' provides NLM-asserted, normalized
+11-digit NDCs in HIPAA format (no dashes). Other sources (CVX, GS, MMSL, MMX, MTHSPL,
+NDDF, VANDF) have various formats and are excluded.
+
+Output: Clean rxcui-to-ndc_11 mapping table for gold layer temporal versioning
 """
 import sys
 from datetime import datetime
@@ -9,7 +15,6 @@ from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
 from awsglue.job import Job  # type: ignore[import-not-found]
 from pyspark.sql import functions as F  # type: ignore[import-not-found]
-from pyspark.sql.types import IntegerType  # type: ignore[import-not-found]
 
 # ============================================================================
 # INITIALIZATION
@@ -71,16 +76,22 @@ print(f"  RXNCONSO: {rxnconso_df.count():,} records")
 
 print("\n[2/4] Extracting NDC mappings from RXNSAT...")
 
-# Filter for NDC attributes only
-ndc_mappings = rxnsat_df.filter(F.col("ATN") == "NDC").select(
+# Filter for NDC attributes from SAB='RXNORM' only
+# Per RxNORM documentation (Section 6.0), SAB='RXNORM' provides NLM-asserted,
+# normalized 11-digit NDCs in HIPAA format (no dashes). Other sources (CVX, GS,
+# MMSL, MMX, MTHSPL, NDDF, VANDF) have various formats (6-4-2, 5-3-2, etc.)
+ndc_mappings = rxnsat_df.filter(
+    (F.col("ATN") == "NDC") &
+    (F.col("SAB") == "RXNORM")
+).select(
     F.col("RXCUI").alias("rxcui"),
-    F.col("ATV").alias("ndc_raw"),
+    F.col("ATV").alias("ndc_11"),  # Already 11-digit format from RXNORM
     F.col("meta_run_id"),
     F.col("meta_release_date")
 )
 
 initial_count = ndc_mappings.count()
-print(f"  Extracted {initial_count:,} NDC mappings")
+print(f"  Extracted {initial_count:,} normalized NDC mappings (SAB=RXNORM)")
 
 # ============================================================================
 # DATA QUALITY VALIDATION
@@ -88,14 +99,15 @@ print(f"  Extracted {initial_count:,} NDC mappings")
 
 print("\n[3/4] Validating NDC formats...")
 
-# Add validation columns (QA checks without transformation)
+# Add validation columns (QA checks)
+# RXNORM SAB should already provide 11-digit HIPAA format
 ndc_mappings = ndc_mappings.withColumn(
-    "ndc_length", F.length(F.col("ndc_raw"))
+    "ndc_length", F.length(F.col("ndc_11"))
 ).withColumn(
-    "ndc_is_numeric", F.col("ndc_raw").rlike("^[0-9]+$")
+    "ndc_is_numeric", F.col("ndc_11").rlike("^[0-9]+$")
 ).withColumn(
     "ndc_is_valid",
-    (F.col("ndc_length") == 12) & (F.col("ndc_is_numeric"))
+    (F.col("ndc_length") == 11) & (F.col("ndc_is_numeric"))
 )
 
 # Print validation stats
@@ -103,25 +115,17 @@ valid_count = ndc_mappings.filter(F.col("ndc_is_valid")).count()
 invalid_count = initial_count - valid_count
 valid_pct = (valid_count / initial_count * 100) if initial_count > 0 else 0
 
-print(f"  Valid NDCs (12 digits, numeric): {valid_count:,} ({valid_pct:.1f}%)")
+print(f"  Valid NDCs (11 digits, numeric): {valid_count:,} ({valid_pct:.1f}%)")
 print(f"  Invalid NDCs: {invalid_count:,} ({100-valid_pct:.1f}%)")
 
 if invalid_count > 0:
     print("\n  Sample invalid NDCs:")
     ndc_mappings.filter(~F.col("ndc_is_valid")).select(
-        "rxcui", "ndc_raw", "ndc_length", "ndc_is_numeric"
+        "rxcui", "ndc_11", "ndc_length", "ndc_is_numeric"
     ).show(10, truncate=False)
 
 # Keep only valid NDCs for silver layer
 ndc_mappings = ndc_mappings.filter(F.col("ndc_is_valid"))
-
-# Convert 12-digit to 11-digit format (remove leading zero if present)
-# This matches FDA's 11-digit format: 5-4-2 (labeler-product-package)
-ndc_mappings = ndc_mappings.withColumn(
-    "ndc_11",
-    F.when(F.col("ndc_raw").startswith("0"), F.substring(F.col("ndc_raw"), 2, 11))
-     .otherwise(F.col("ndc_raw"))
-)
 
 # ============================================================================
 # ENRICH WITH DRUG NAMES
@@ -146,7 +150,6 @@ ndc_mappings_enriched = ndc_mappings.join(
     "left"
 ).select(
     ndc_mappings.rxcui,
-    ndc_mappings.ndc_raw,
     ndc_mappings.ndc_11,
     rxnconso_preferred.str,
     rxnconso_preferred.tty,
@@ -179,8 +182,8 @@ ndc_mappings_enriched.write.mode("overwrite").option(
 # ============================================================================
 
 print(f"\n✓ Silver RxNORM NDC Mapping ETL completed")
-print(f"  Input records (RXNSAT): {initial_count:,}")
-print(f"  Valid NDCs (12-digit): {valid_count:,}")
+print(f"  Input records (SAB=RXNORM): {initial_count:,}")
+print(f"  Valid NDCs (11-digit HIPAA format): {valid_count:,}")
 print(f"  Invalid NDCs filtered: {invalid_count:,}")
 print(f"  Final silver records: {final_count:,}")
 print(f"  Enriched with drug names: {enriched_count:,}")
