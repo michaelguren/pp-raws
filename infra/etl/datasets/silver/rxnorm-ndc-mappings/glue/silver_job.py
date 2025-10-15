@@ -1,10 +1,12 @@
 """
 Silver RxNORM NDC Mapping Job - Extract and validate NDC mappings from RXNSAT
 
-Reads bronze RXNSAT and RXNCONSO tables, filters for SAB='RXNORM' NDC attributes.
-Per RxNORM documentation (Section 6.0), SAB='RXNORM' provides NLM-asserted, normalized
-11-digit NDCs in HIPAA format (no dashes). Other sources (CVX, GS, MMSL, MMX, MTHSPL,
-NDDF, VANDF) have various formats and are excluded.
+Reads bronze RXNSAT table and silver rxnorm_products table.
+Filters for SAB='RXNORM' NDC attributes (Section 6.0 of RxNORM docs).
+SAB='RXNORM' provides NLM-asserted, normalized 11-digit NDCs in HIPAA format (no dashes).
+Other sources (CVX, GS, MMSL, MMX, MTHSPL, NDDF, VANDF) have various formats and are excluded.
+
+Enriches with drug names from rxnorm_products (prescribable products only: SCD, SBD, GPCK, BPCK).
 
 Output: Clean rxcui-to-ndc_11 mapping table for gold layer temporal versioning
 """
@@ -54,7 +56,7 @@ print(f"  Run ID: {run_id}")
 # DATA EXTRACTION
 # ============================================================================
 
-print("\n[1/4] Reading bronze tables...")
+print("\n[1/4] Reading source tables...")
 
 # Read RXNSAT (contains NDC mappings)
 rxnsat_df = glueContext.create_dynamic_frame.from_catalog(
@@ -63,12 +65,12 @@ rxnsat_df = glueContext.create_dynamic_frame.from_catalog(
 ).toDF()
 print(f"  RXNSAT: {rxnsat_df.count():,} records")
 
-# Read RXNCONSO (for drug names and term types)
-rxnconso_df = glueContext.create_dynamic_frame.from_catalog(
-    database=bronze_database,
-    table_name="rxnconso"
+# Read rxnorm_products silver table (already filtered to prescribable products)
+rxnorm_products_df = glueContext.create_dynamic_frame.from_catalog(
+    database=silver_database,
+    table_name="rxnorm_products"
 ).toDF()
-print(f"  RXNCONSO: {rxnconso_df.count():,} records")
+print(f"  rxnorm_products: {rxnorm_products_df.count():,} records")
 
 # ============================================================================
 # EXTRACT NDC MAPPINGS
@@ -131,28 +133,22 @@ ndc_mappings = ndc_mappings.filter(F.col("ndc_is_valid"))
 # ENRICH WITH DRUG NAMES
 # ============================================================================
 
-print("\n[4/4] Enriching with drug names from RXNCONSO...")
+print("\n[4/4] Enriching with drug names from rxnorm_products...")
 
-# Get preferred English names for each RXCUI
-rxnconso_preferred = rxnconso_df.filter(
-    (F.col("LAT") == "ENG") &
-    (F.col("ISPREF") == "Y")
-).select(
-    F.col("RXCUI").alias("rxcui_conso"),
-    F.col("STR").alias("str"),
-    F.col("TTY").alias("tty")
-)
-
-# Join with mappings
+# Join with rxnorm_products to get drug names (already filtered to SCD, SBD, GPCK, BPCK)
 ndc_mappings_enriched = ndc_mappings.join(
-    rxnconso_preferred,
-    ndc_mappings.rxcui == rxnconso_preferred.rxcui_conso,
+    rxnorm_products_df.select(
+        F.col("rxnorm_rxcui").alias("product_rxcui"),
+        F.col("rxnorm_str").alias("str"),
+        F.col("rxnorm_tty").alias("tty")
+    ),
+    ndc_mappings.rxcui == F.col("product_rxcui"),
     "left"
 ).select(
     ndc_mappings.rxcui,
     ndc_mappings.ndc_11,
-    rxnconso_preferred.str,
-    rxnconso_preferred.tty,
+    F.col("str"),
+    F.col("tty"),
     F.col("ndc_length").alias("qa_ndc_length"),
     F.col("ndc_is_numeric").alias("qa_ndc_is_numeric"),
     ndc_mappings.meta_run_id,
