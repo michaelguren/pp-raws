@@ -19,17 +19,29 @@ etl/
 ├── config.json                        # Global config (prefixes, worker sizes)
 ├── index.js                           # Stack orchestrator
 ├── EtlCoreStack.js                   # Shared infrastructure (S3, IAM, databases)
-├── datasets/{dataset}/
-│   ├── config.json                   # Dataset config (tables, schema, schedule)
-│   ├── {Dataset}Stack.js             # Stack definition
-│   └── glue/*.py                     # Custom gold layer jobs (if needed)
+├── datasets/                          # Organized by medallion layer (RAWS convention)
+│   ├── bronze/{dataset}/             # Raw data ingestion datasets
+│   │   ├── config.json               # Dataset config (source URL, schema, schedule)
+│   │   ├── {Dataset}Stack.js         # Stack definition
+│   │   └── glue/*.py                 # Custom bronze jobs (Pattern B only)
+│   ├── silver/{dataset}/             # Transformed/joined datasets
+│   │   ├── config.json               # Dataset config (dependencies, transformations)
+│   │   ├── {Dataset}Stack.js         # Stack definition (always custom)
+│   │   └── glue/*.py                 # Custom transformation jobs
+│   └── gold/{dataset}/               # Curated, analytics-ready datasets
+│       ├── config.json               # Dataset config (dependencies, temporal config)
+│       ├── {Dataset}Stack.js         # Stack definition (always custom)
+│       └── glue/*.py                 # Custom gold layer jobs
 └── shared/
     ├── deploytime/
     │   ├── factory.js                # CDK factory for bronze stacks
     │   └── index.js                  # Shared deployment utilities
-    └── runtime/https_zip/
-        ├── bronze_http_job.py        # Shared bronze job for HTTP/ZIP sources
-        └── etl_runtime_utils.py      # Runtime utilities (packaged via --extra-py-files)
+    └── runtime/
+        ├── https_zip/
+        │   ├── bronze_http_job.py    # Shared bronze job for HTTP/ZIP sources
+        │   └── etl_runtime_utils.py  # Runtime utilities (packaged via --extra-py-files)
+        └── temporal/
+            └── temporal_versioning.py # Shared temporal versioning for gold layer
 ```
 
 ## Configuration Files
@@ -62,10 +74,11 @@ etl/
 ## Naming Conventions
 
 **AWS Resources**: `{prefix}-{layer}-{dataset}[-{table}][-crawler]`
-- Glue Jobs: `pp-dw-bronze-fda-nsde`, `pp-dw-silver-fda-all-ndc`
-- Crawlers: `pp-dw-bronze-fda-products-crawler`
-- Databases: `pp_dw_bronze`, `pp_dw_silver` (underscores, not hyphens)
-- Glue Tables: Hyphens in `file_table_mapping` → underscores (`fda-products` → `fda_products`)
+- Glue Jobs: `pp-dw-bronze-fda-nsde`, `pp-dw-silver-fda-all-ndc`, `pp-dw-gold-fda-all-ndcs`
+- Crawlers: `pp-dw-bronze-fda-products-crawler`, `pp-dw-gold-fda-all-ndcs-crawler`
+- Databases: `pp_dw_bronze`, `pp_dw_silver`, `pp_dw_gold` (underscores, not hyphens)
+- Glue Tables: Hyphens in dataset names → underscores (`fda-all-ndcs` → `fda_all_ndcs`)
+- **Naming Convention**: Gold datasets use **plural names** for consistency
 
 **S3 Paths**:
 ```
@@ -74,6 +87,7 @@ s3://pp-dw-{account}/
 ├── bronze/{dataset}/              # Single-table datasets
 ├── bronze/{dataset}/{table}/      # Multi-table datasets
 ├── silver/{dataset}/              # Silver layer tables
+├── gold/{dataset}/                # Gold layer tables (status-partitioned)
 └── etl/datasets/{dataset}/glue/   # Dataset-specific scripts
 ```
 
@@ -96,7 +110,7 @@ factory.createDatasetInfrastructure({
 - Uses shared `bronze_http_job.py` and `etl_runtime_utils.py`
 - Schema defined in `config.json` (column mappings, types)
 - Supports single and multi-table datasets
-- Examples: `fda-nsde`, `fda-cder`, `fda-all-ndc`
+- Examples: `fda-nsde`, `fda-cder`
 
 **Pattern B: Custom Bronze Jobs (Specialized Sources)**
 Use for datasets with unique formats, authentication, or processing requirements:
@@ -112,7 +126,167 @@ Use for datasets with unique formats, authentication, or processing requirements
 - Read source dataset configs at deploy time for table names
 - Pass table names as Glue job arguments
 - Custom transformation logic in `glue/*.py`
-- Example: `fda-all-ndc` joins `fda-nsde` + `fda-cder` tables
+- Examples:
+  - `fda-all-ndc` joins `fda-nsde` + `fda-cder` tables
+  - `rxnorm-ndc-mappings` extracts NDC mappings from RXNSAT
+  - `rxnorm-products` filters prescribable products from RxNORM
+
+## Gold Layer - Temporal Versioning (SCD Type 2)
+
+Gold datasets use **temporal versioning** to enable efficient incremental DynamoDB syncs and historical tracking.
+
+### Core Pattern
+- **End-of-Time**: Current records use `active_to = '9999-12-31'` (not NULL)
+- **Status Partitioning**: Physical separation into `status=current/` and `status=historical/`
+- **Change Detection**: MD5 hash of business columns identifies changes
+  - NEW: Insert with `active_to=9999-12-31`
+  - CHANGED: Expire old (set `active_to=today`), insert new
+  - UNCHANGED: Skip (no write)
+  - EXPIRED: Set `active_to=today`
+
+### Schema
+```
+# Version tracking
+version_id       STRING    UUID for this version
+content_hash     STRING    MD5 of business columns
+active_from      DATE      When version became active
+active_to        DATE      When expired (9999-12-31 = current)
+status           STRING    Partition: current or historical
+
+# Business columns (no layer prefixes)
+ndc_11, proprietary_name, ...           (fda-all-ndcs)
+rxcui, str, ingredient_names, ...       (rxnorm-products)
+rxcui, ndc_11, ...                      (rxnorm-ndc-mappings - composite key)
+rxcui, class_id, class_type, ...        (rxnorm-product-classifications - composite key)
+
+# Metadata
+run_date, run_id, source_file
+```
+
+### Shared Library
+**Location**: `shared/runtime/temporal/temporal_versioning.py`
+
+**Key Functions**:
+```python
+# Apply temporal versioning to incoming data
+versioned_df = apply_temporal_versioning(
+    spark, incoming_df, existing_table,
+    business_key, business_columns, run_date, run_id
+)
+
+# Query helpers
+get_current_records(spark, table)              # WHERE active_to = '9999-12-31'
+get_changes_for_date(spark, table, date)       # Incremental sync query
+```
+
+### Common Queries
+```sql
+-- Current records only
+SELECT * FROM pp_dw_gold.fda_all_ndcs WHERE status = 'current';
+
+-- Incremental changes for DynamoDB sync
+SELECT * FROM pp_dw_gold.fda_all_ndcs
+WHERE run_date = '2025-10-14'
+  AND (active_from = '2025-10-14' OR active_to = '2025-10-14');
+
+-- Point-in-time historical query
+SELECT * FROM pp_dw_gold.fda_all_ndcs
+WHERE ndc_11 = '00002322702'
+  AND '2024-01-01' BETWEEN active_from AND active_to;
+
+-- Composite key query (mappings)
+SELECT * FROM pp_dw_gold.rxnorm_ndc_mappings
+WHERE rxcui = '392409' AND status = 'current';
+
+-- Composite key query (classifications)
+SELECT * FROM pp_dw_gold.rxnorm_product_classifications
+WHERE rxcui = '392409' AND class_type = 'ATC' AND status = 'current';
+```
+
+### Benefits
+- **95% cost reduction** in DynamoDB writes (~380K → ~500 writes/day)
+- **Historical queries** - view data as it existed at any point in time
+- **Audit trail** - complete change history
+- **Fast queries** - status partitioning enables partition pruning
+
+---
+
+## Reading from Glue Data Catalog
+
+**CRITICAL: Always use `glueContext.create_dynamic_frame.from_catalog()` to read tables from the Glue Data Catalog.**
+
+### Correct Pattern
+```python
+# ✅ CORRECT - Use GlueContext to read from catalog
+from awsglue.context import GlueContext
+from pyspark.context import SparkContext
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+
+# Read table from Glue catalog and convert to DataFrame
+rxnsat_df = glueContext.create_dynamic_frame.from_catalog(
+    database="pp_dw_bronze",
+    table_name="rxnsat"
+).toDF()
+```
+
+### Incorrect Pattern
+```python
+# ❌ INCORRECT - spark.table() will fail with "TABLE_OR_VIEW_NOT_FOUND"
+rxnsat_df = spark.table("pp_dw_bronze.rxnsat")  # DON'T DO THIS!
+
+# ❌ INCORRECT - Even with catalog specified
+rxnsat_df = spark.table(f"{database}.{table}")  # DON'T DO THIS!
+```
+
+### Why This Matters
+- `spark.table()` requires proper Hive metastore configuration and catalog settings
+- `glueContext.create_dynamic_frame.from_catalog()` is the AWS-native method that works reliably with Glue Data Catalog
+- The GlueContext method handles all catalog configuration automatically
+- This is the recommended pattern in AWS Glue documentation
+
+### Common Usage Patterns
+
+**Single table read:**
+```python
+df = glueContext.create_dynamic_frame.from_catalog(
+    database=args['bronze_database'],
+    table_name="rxnsat"
+).toDF()
+```
+
+**Multiple table reads with job arguments:**
+```python
+# Stack passes table names as job arguments
+rxnconso = glueContext.create_dynamic_frame.from_catalog(
+    database=args['bronze_database'],
+    table_name=args['rxnconso_table']
+).toDF()
+
+rxnrel = glueContext.create_dynamic_frame.from_catalog(
+    database=args['bronze_database'],
+    table_name=args['rxnrel_table']
+).toDF()
+```
+
+**Reading from different layers:**
+```python
+# Read from bronze
+bronze_df = glueContext.create_dynamic_frame.from_catalog(
+    database=args['bronze_database'],
+    table_name="fda_nsde"
+).toDF()
+
+# Read from silver
+silver_df = glueContext.create_dynamic_frame.from_catalog(
+    database=args['silver_database'],
+    table_name="rxnorm_ndc_mappings"
+).toDF()
+```
+
+---
 
 ## Data Flow
 
@@ -137,21 +311,48 @@ Use for datasets with unique formats, authentication, or processing requirements
 - Write to `s3://.../silver/{dataset}/` as Parquet/ZSTD
 - Crawler updates Glue catalog
 
+**Gold Layer** (temporal versioning):
+- Read silver tables from Glue catalog
+- Apply temporal versioning via shared library
+- Compare incoming data with existing gold table (MD5 content hash)
+- Write new/changed/expired versions to `s3://.../gold/{dataset}/` as Parquet/ZSTD
+- Partition by `status` (current/historical)
+- Crawler updates Glue catalog
+
 ## Adding New Datasets
 
 **Bronze - Pattern A (Factory-Based)**:
-1. Create `datasets/{dataset}/config.json` with schema
-2. Create `datasets/{dataset}/{Dataset}Stack.js` using factory pattern
-3. Add to `index.js`
+1. Create `datasets/bronze/{dataset}/config.json` with schema
+2. Create `datasets/bronze/{dataset}/{Dataset}Stack.js` using factory pattern
+3. Add to `index.js` under "// Import dataset stacks - Bronze"
 
 **Bronze - Pattern B (Custom)**:
-1. Create `datasets/{dataset}/config.json` (optional, for metadata)
-2. Create custom `datasets/{dataset}/{Dataset}Stack.js` with manual Glue job setup
-3. Create custom `datasets/{dataset}/glue/bronze_job.py` with specialized logic
-4. Add to `index.js`
+1. Create `datasets/bronze/{dataset}/config.json` (optional, for metadata)
+2. Create custom `datasets/bronze/{dataset}/{Dataset}Stack.js` with manual Glue job setup
+3. Create custom `datasets/bronze/{dataset}/glue/bronze_job.py` with specialized logic
+4. Add to `index.js` under "// Import dataset stacks - Bronze"
 
 **Silver** (always custom):
-1. Create `datasets/{dataset}/config.json` with source dependencies
-2. Create custom `{Dataset}Stack.js` (read source configs, pass table names)
-3. Create `glue/silver_job.py` with transformation logic
-4. Add to `index.js`
+1. Create `datasets/silver/{dataset}/config.json` with source dependencies
+2. Create custom `datasets/silver/{dataset}/{Dataset}Stack.js` (read source configs, pass table names)
+3. Create `datasets/silver/{dataset}/glue/silver_job.py` with transformation logic
+4. Add to `index.js` under "// Import dataset stacks - Silver"
+
+**Gold** (always custom, uses temporal versioning):
+1. Create `datasets/gold/{dataset}/config.json` with:
+   - Source dependencies (silver or bronze tables)
+   - `temporal_config`: `business_key` (string or array for composite keys), `business_columns` for change detection
+   - **Use plural dataset names** (e.g., `fda-all-ndcs`, `rxnorm-ndc-mappings`)
+2. Create custom `datasets/gold/{dataset}/{Dataset}Stack.js`
+   - Deploy temporal library: `shared/runtime/temporal/temporal_versioning.py`
+   - Pass library path via `--extra-py-files`
+3. Create `datasets/gold/{dataset}/glue/gold_job.py`:
+   - Import and use `apply_temporal_versioning()` from shared library
+   - Drop layer-specific prefixes from column names
+   - Support composite keys (pass array to `business_key` parameter)
+4. Add to `index.js` under "// Import dataset stacks - Gold"
+
+**RAWS Conventions**:
+- All datasets MUST be organized into bronze/, silver/, or gold/ subdirectories based on their medallion layer
+- Gold datasets use **plural names** for consistency
+- Composite keys are supported for N:M relationships (e.g., rxcui + ndc_11, rxcui + class_id + class_type)
