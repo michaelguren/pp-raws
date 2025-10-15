@@ -69,6 +69,16 @@ We preserve the **Medallion pattern** because it works — but we make it our ow
 | **Silver** | Refine and normalize data. Apply structure, quality checks, and transformations. | Flatten NDC lists, standardize column names     |
 | **Gold**   | Curated, consumable data. Ready for app-level access, APIs, and analytics.       | `gold.drug_reference` for Pocket Pharmacist app |
 
+**Folder Convention**: In RAWS ETL projects, datasets are organized by medallion layer:
+```
+datasets/
+├── bronze/{dataset}/    # Raw ingestion datasets
+├── silver/{dataset}/    # Transformed/joined datasets
+└── gold/{dataset}/      # Curated, analytics-ready datasets
+```
+
+This structure ensures consistency across all RAWS projects and makes the data lineage immediately clear.
+
 Each layer is **idempotent** and **disposable**.  
 Glue Jobs perform the work; Step Functions orchestrate flow.  
 S3 and Athena form the lakehouse — the simplest expression of truth.  

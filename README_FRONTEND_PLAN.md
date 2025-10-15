@@ -8,7 +8,7 @@
 
 ### Gold Layer: `drug-product-codesets`
 - **Location**: `pp_dw_gold.drug_product_codesets` (Athena/S3)
-- **Record Count**: 304,823 records
+- **Record Count**: ~380,000 records
 - **Data Structure**: Dual-source unified dataset
   - FDA fields (prefixed `fda_*`): NDC codes, proprietary names, dosage forms, marketing status
   - RxNORM fields (prefixed `rxnorm_*`): RxCUI codes, clinical terminology, ingredient names
@@ -17,13 +17,14 @@
 ### Key Searchable Fields
 | Field | Type | Example | Search Priority |
 |-------|------|---------|----------------|
-| `fda_ndc_11` | string | `00002-3227-02` | High (exact/prefix) |
+| `fda_ndc_11` | string | `00002322702` | High (exact/prefix) |
 | `fda_proprietary_name` | string | `Prozac` | High (full-text) |
-| `fda_dosage_form` | string | `TABLET` | Medium (filter) |
 | `rxnorm_rxcui` | string | `392409` | High (exact) |
 | `rxnorm_str` | string | `fluoxetine 20 MG Oral Capsule` | High (full-text) |
 | `rxnorm_ingredient_names` | string | `fluoxetine` | High (full-text) |
-| `rxnorm_brand_names` | string | `Prozac` | Medium (full-text) |
+| `rxnorm_brand_names` | string | `Prozac\|Sarafem` | High (full-text) |
+
+**Note**: Dosage form fields (`fda_dosage_form`, `rxnorm_dosage_forms`) are **excluded** from search - they are display-only attributes, not primary search terms.
 
 ### Infrastructure Gaps
 - No API layer exists yet
@@ -49,14 +50,14 @@ Following the RAWS manifesto principles:
 └─────────────────────────────────────────────────────────────────┘
 
 Gold Layer (Athena/S3)
-  pp_dw_gold.drug_product_codesets (304K records)
+  pp_dw_gold.drug_product_codesets (380K records)
         │
-        │ [New ETL Job]
+        │ [New ETL Job: Batch-Optimized PySpark]
         ↓
 Operational Layer (DynamoDB)
-  pp-dw-drugs-table
+  pocket-pharmacist (single-table design)
     ├─ Drug Records: PK=DRUG#{id}, SK=METADATA#{timestamp}
-    └─ Search Tokens: PK=SEARCH#DPC, SK=token#{word}#{field}#DRUG#{id}
+    └─ Search Tokens: PK=SEARCH#DRUG, SK=token#{word}#{field}#DRUG#{id}
         │
         │ [API Gateway + VTL]
         ↓
@@ -80,7 +81,9 @@ Static Frontend (S3 + CloudFront)
 
 **Purpose**: Transform analytics data (Gold) into operational API-ready data
 
-#### Table Design: `pp-dw-drugs-table`
+#### Table Design: `pocket-pharmacist`
+
+**Design Philosophy**: Single-table DynamoDB design - this table will eventually hold all app entities (drugs, users, favorites, sessions, etc.). For v0.2, we're starting with drug records and search tokens.
 
 **Primary Key Pattern**:
 ```
@@ -91,11 +94,11 @@ SK: METADATA#{timestamp}
 **Attributes** (following gold schema):
 ```javascript
 {
-  PK: "DRUG#00002-3227-02",
+  PK: "DRUG#00002322702",  // NDC without hyphens
   SK: "METADATA#2025-10-09",
 
   // FDA Fields (preserve fda_ prefix)
-  fda_ndc_11: "00002-3227-02",
+  fda_ndc_11: "00002322702",  // 11 digits, no hyphens
   fda_ndc_5: "00002",
   fda_proprietary_name: "Prozac",
   fda_dosage_form: "CAPSULE",
@@ -124,19 +127,21 @@ SK: METADATA#{timestamp}
 Following the **RAWS "Unified Domain" search pattern**:
 
 ```
-PK: SEARCH#<domain>
-SK: token#<normalized_token>#<field>#DRUG#<entity_id>
+PK: SEARCH#<entity_type>
+SK: token#<normalized_token>#<field>#<entity_type>#<entity_id>
 
-Example for domain "DPC" (Drug Product Codesets):
-PK: "SEARCH#DPC"
-SK: "token#prozac#proprietary_name#DRUG#00002-3227-02"
-SK: "token#fluoxetine#ingredient#DRUG#00002-3227-02"
-SK: "token#capsule#dosage_form#DRUG#00002-3227-02"
+Example for DRUG entity:
+PK: "SEARCH#DRUG"
+SK: "token#prozac#proprietary_name#DRUG#00002322702"
+SK: "token#fluoxetine#ingredient#DRUG#00002322702"
+SK: "token#capsule#rxnorm_str#DRUG#00002322702"
 
-PK: "SEARCH#DPC"
+PK: "SEARCH#DRUG"
 SK: "token#atorvastatin#ingredient#DRUG#12345"
 SK: "token#amlodipine#ingredient#DRUG#12345"  // Multi-value fields create multiple items
 ```
+
+**Future entity types**: `SEARCH#USER`, `SEARCH#INTERACTION`, etc.
 
 **Query Pattern**:
 ```javascript
@@ -144,25 +149,25 @@ SK: "token#amlodipine#ingredient#DRUG#12345"  // Multi-value fields create multi
 {
   KeyConditionExpression: "PK = :pk AND begins_with(SK, :prefix)",
   ExpressionAttributeValues: {
-    ":pk": "SEARCH#DPC",
+    ":pk": "SEARCH#DRUG",
     ":prefix": "token#pro"  // Matches "token#prozac#..."
   }
 }
 
 // Parse SK to extract: token, field, entity_id
-// "token#prozac#proprietary_name#DRUG#00002-3227-02"
-//   → token="prozac", field="proprietary_name", id="00002-3227-02"
+// "token#prozac#proprietary_name#DRUG#00002322702"
+//   → token="prozac", field="proprietary_name", id="00002322702"
 ```
 
 **Why This Design?**
-- **Unified cross-field search**: One query searches ALL fields (name, ingredient, brand, etc.)
+- **Unified cross-field search**: One query searches ALL fields (name, ingredient, brand, NDC)
 - **Field metadata preserved**: SK contains field name for filtering, highlighting, and relevance ranking
 - **No progressive tokenization**: DynamoDB `begins_with` handles prefix matching natively
 - **Deterministic**: No relevance scoring mysteries, just prefix matching
 - **Scalable**: GSI queries scale independently of table size
-- **Cost-effective**: Pay per request, no cluster overhead
+- **Cost-effective**: ~$0.30/month for 380k drugs (vs $50-200/month for OpenSearch)
 - **Simple**: No sync pipelines, no external dependencies
-- **Escape hatch**: Can split to `SEARCH#DPC#<field>` if one field grows too large (100K+ items)
+- **Escape hatch**: Can split to `SEARCH#DRUG#<field>` if one field grows too large (100K+ items)
 
 #### ETL Sync Job: Gold → DynamoDB
 
@@ -171,51 +176,199 @@ SK: "token#amlodipine#ingredient#DRUG#12345"  // Multi-value fields create multi
 - **Output**: DynamoDB `pp-dw-drugs-table`
 - **Frequency**: Daily (after gold layer refresh)
 
-**Tokenization Strategy**:
+**Tokenization Strategy** (Refined in Planning Session 2025-10-10):
 
-1. **Extract and tokenize searchable fields** (one item per word):
-   - `fda_proprietary_name` → Split into words
-   - `fda_ndc_11` → Store as-is (numeric search)
-   - `rxnorm_str` → Split into words (e.g., "fluoxetine 20 MG Oral Capsule")
-   - `rxnorm_ingredient_names` → Split by ` / ` delimiter (handles combos like "atorvastatin / amlodipine")
-   - `rxnorm_brand_names` → Split by `|` delimiter (handles multiple brands)
+**Searchable Fields** (dosages excluded):
+- `fda_ndc_11` - 11-digit NDC codes (no hyphens)
+- `fda_proprietary_name` - Brand/proprietary names
+- `rxnorm_rxcui` - RxNORM concept identifiers
+- `rxnorm_str` - RxNORM concept strings
+- `rxnorm_ingredient_names` - Active ingredient names
+- `rxnorm_brand_names` - Brand name aliases
 
-2. **Normalize tokens**:
-   - Lowercase
-   - Trim whitespace
-   - Strip punctuation (optional: keep hyphens in NDCs)
-   - Format: `token#<normalized_word>#<field>#DRUG#<id>`
+**Tokenization Rules**:
+1. **Split on multiple delimiters**: Space `" "`, Slash `"/"`, Pipe `"|"` using regex `[\s/|]+`
+2. **Normalize**: Trim whitespace, convert to lowercase
+3. **Filter**: Remove tokens < 3 characters, filter 60+ English stop words
+4. **Keep digits**: Numbers like `500`, `100` are valid search terms
+5. **No special cases**: All fields processed uniformly (no NDC-specific logic)
 
-3. **Write search token items to DynamoDB**:
-   ```python
-   # Single-value field example (fda_proprietary_name = "Prozac")
-   PK: "SEARCH#DPC"
-   SK: "token#prozac#proprietary_name#DRUG#00002-3227-02"
+**Example Tokenization**:
+```python
+"Tylenol / Pain Relief | 500 mg Tablets"
+→ Split: ["Tylenol", "Pain", "Relief", "500", "mg", "Tablets"]
+→ Filter: ["tylenol", "pain", "relief", "500", "tablets"]  # "mg" < 3 chars removed
 
-   # Multi-value field example (rxnorm_ingredient_names = "atorvastatin / amlodipine")
-   PK: "SEARCH#DPC"
-   SK: "token#atorvastatin#ingredient#DRUG#12345"
-   SK: "token#amlodipine#ingredient#DRUG#12345"
+"atorvastatin / amlodipine"
+→ ["atorvastatin", "amlodipine"]
 
-   # Multi-word field example (rxnorm_str = "fluoxetine 20 MG Oral Capsule")
-   PK: "SEARCH#DPC"
-   SK: "token#fluoxetine#rxnorm_str#DRUG#00002-3227-02"
-   SK: "token#oral#rxnorm_str#DRUG#00002-3227-02"
-   SK: "token#capsule#rxnorm_str#DRUG#00002-3227-02"
-   ```
+"Prozac|Sarafem/Fluoxetine Daily"
+→ ["prozac", "sarafem", "fluoxetine", "daily"]
 
-4. **Deduplicate tokens** per drug (use set to avoid duplicate writes across fields)
+"00002322702"  # NDC
+→ ["00002322702"]  # No split - single token
+```
 
-5. **Prefix matching** is handled by DynamoDB `begins_with`:
-   - Query `token#pro` matches `token#prozac#...`
-   - Query `token#flu` matches `token#fluoxetine#...`
-   - No need to store progressive prefixes!
+**Complete PySpark Implementation**:
+
+```python
+import re
+from pyspark.sql import functions as F
+from pyspark.sql.types import ArrayType, StringType
+
+# ========================
+# 1. Tokenization UDF
+# ========================
+
+# Stop words (60+ common English words)
+STOP_WORDS = {
+    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to',
+    'for', 'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are',
+    'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did',
+    'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can',
+    'that', 'this', 'these', 'those', 'which', 'what', 'who', 'when',
+    'where', 'why', 'how', 'all', 'each', 'every', 'both', 'few',
+    'more', 'most', 'other', 'some', 'such', 'than', 'too', 'very'
+}
+
+def tokenize_field(text):
+    """
+    Split on space/slash/pipe, filter by length/stop words.
+    All fields treated uniformly - no special cases.
+    """
+    if not text:
+        return []
+
+    return [
+        token for token in
+        (t.strip().lower() for t in re.split(r'[\s/|]+', text))
+        if len(token) >= 3
+        and token not in STOP_WORDS
+    ]
+
+# Register as Spark UDF
+tokenize_udf = F.udf(tokenize_field, ArrayType(StringType()))
+
+# ========================
+# 2. Apply to All Fields
+# ========================
+
+gold_df = spark.read.table("pp_dw_gold.drug_product_codesets")
+
+# Searchable fields mapping
+searchable_fields = {
+    "ndc": "fda_ndc_11",
+    "proprietary_name": "fda_proprietary_name",
+    "rxcui": "rxnorm_rxcui",
+    "rxnorm_str": "rxnorm_str",
+    "ingredient": "rxnorm_ingredient_names",
+    "brand": "rxnorm_brand_names"
+}
+
+# Apply tokenization UDF
+for field_name, col_name in searchable_fields.items():
+    gold_df = gold_df.withColumn(f"{field_name}_tokens", tokenize_udf(F.col(col_name)))
+
+# Add entity_id
+gold_df = gold_df.withColumn("entity_id", F.coalesce(F.col("fda_ndc_11"), F.col("rxnorm_rxcui")))
+
+# ========================
+# 3. Explode Tokens
+# ========================
+
+exploded_dfs = []
+
+for field_name in searchable_fields.keys():
+    token_col = f"{field_name}_tokens"
+    exploded_dfs.append(
+        gold_df.select(
+            F.col("entity_id"),
+            F.lit(field_name).alias("field"),
+            F.explode_outer(F.col(token_col)).alias("token")
+        )
+    )
+
+# Union all exploded dataframes
+tokens_df = exploded_dfs[0]
+for next_df in exploded_dfs[1:]:
+    tokens_df = tokens_df.unionByName(next_df)
+
+# Filter nulls
+tokens_df = tokens_df.filter(F.col("token").isNotNull())
+
+# ========================
+# 4. Format for DynamoDB
+# ========================
+
+search_tokens_df = (
+    tokens_df
+    .withColumn("PK", F.lit("SEARCH#DRUG"))
+    .withColumn("SK", F.concat_ws("#",
+                                  F.lit("token"),
+                                  F.col("token"),
+                                  F.col("field"),
+                                  F.lit("DRUG"),
+                                  F.col("entity_id")))
+    .select("PK", "SK")
+    .distinct()  # Deduplicate
+)
+
+# ========================
+# 5. Batch Write to DynamoDB
+# ========================
+
+def batch_write_partition(partition_items):
+    """Write partition to DynamoDB with error handling"""
+    import boto3
+    from botocore.exceptions import ClientError
+
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table('pocket-pharmacist')
+
+    with table.batch_writer(overwrite_by_pkeys=['PK', 'SK']) as batch:
+        for row in partition_items:
+            try:
+                batch.put_item(Item={'PK': row['PK'], 'SK': row['SK']})
+            except ClientError as e:
+                print(f"Write failed for {row}: {e}")
+
+# Partition sizing: 5-10K items per partition
+num_partitions = max(4, search_tokens_df.rdd.getNumPartitions() * 2)
+
+# Batch write (parallel across executors)
+(
+    search_tokens_df
+    .repartition(num_partitions)
+    .foreachPartition(batch_write_partition)
+)
+```
+
+**Performance Expectations**:
+- 380k drugs → ~1.2M search tokens (after deduplication)
+- Job runtime: ~5 minutes (10 G.2X workers)
+- DynamoDB writes: Parallel batch writes (25 items per API call)
+- Cost per run: ~$0.35 Glue + $2.35 DynamoDB = $2.70 total
 
 **Data Quality Checks**:
-- Verify all 304K+ records synced
-- Validate search tokens created (expect ~1.5M search items, not 3M+)
+- Verify all 380k+ drug records synced
+- Validate ~1.2M search token items created (after deduplication)
 - Check null handling (some records have FDA only or RxNORM only)
 - Verify multi-value fields split correctly (ingredient combos, multiple brands)
+- Confirm tokenization applied stop words correctly (no "the", "and", etc.)
+- Validate all tokens meet 3-char minimum
+
+**DynamoDB Cost Estimates** (detailed):
+
+| Component | Calculation | Monthly Cost |
+|-----------|-------------|--------------|
+| **Drug Records** | 380k × 2 KB = 760 MB | $0.19 |
+| **Search Tokens** | 1.2M × 61 bytes = 73 MB | $0.02 |
+| **Total Storage** | 833 MB | **$0.21/month** |
+| **Read Ops** (10k/day) | 300k RRUs × $0.25/M | **$0.08/month** |
+| **Initial Load** (one-time) | 1.58M WRUs × $1.25/M | **$2.35** |
+
+**Total Ongoing Cost**: ~$0.29/month
+**vs OpenSearch**: $50-200/month minimum (175-690x more expensive)
 
 ---
 
@@ -264,11 +417,11 @@ Response:
 **VTL Template** (DynamoDB Query via GSI):
 ```vtl
 {
-  "TableName": "pp-dw-drugs-table",
+  "TableName": "pocket-pharmacist",
   "IndexName": "SearchTokenIndex",
   "KeyConditionExpression": "PK = :pk AND begins_with(SK, :prefix)",
   "ExpressionAttributeValues": {
-    ":pk": { "S": "SEARCH#DPC" },
+    ":pk": { "S": "SEARCH#DRUG" },
     ":prefix": { "S": "token#$input.params('q').toLowerCase()" }
   },
   "Limit": $input.params('limit')
@@ -306,7 +459,7 @@ Response:
 **VTL Template** (DynamoDB GetItem):
 ```vtl
 {
-  "TableName": "pp-dw-drugs-table",
+  "TableName": "pocket-pharmacist",
   "Key": {
     "PK": { "S": "DRUG#$input.params('id')" },
     "SK": { "S": "METADATA#latest" }
@@ -394,7 +547,7 @@ frontend/
 - [ ] Verify table creation and GSI status
 
 **Success Criteria**:
-- DynamoDB table `pp-dw-drugs-table` exists
+- DynamoDB table `pocket-pharmacist` exists
 - GSI `SearchTokenIndex` is ACTIVE
 - Can manually write/read test items via AWS Console
 
@@ -409,36 +562,85 @@ frontend/
 - [ ] Write search token items to DynamoDB (batch writes)
 - [ ] Add data quality checks (record counts, null rates)
 - [ ] Run job against full gold dataset
-- [ ] Verify 304K+ drug records in DynamoDB
-- [ ] Verify search tokens created (1-3M items)
+- [ ] Verify 380k+ drug records in DynamoDB
+- [ ] Verify ~1.2M search token items created (after deduplication)
 
 **Success Criteria**:
 - All gold records synced to DynamoDB
 - Search queries return expected results (test via Console)
-- Job runs in < 10 minutes
+- Job runs in < 5 minutes (with batch-optimized PySpark)
 - No duplicate tokens per drug
+- Tokenization quality verified (stop words filtered, min 3 chars)
 
 ---
 
-### Phase 3: API Layer (Week 2)
-**Goal**: REST API with search and detail endpoints
+### Phase 3: API Layer + CLI Testing (Week 2) ⏸️
 
+**Goal**: REST API with search and detail endpoints + thorough CLI validation
+
+**Part A: Deploy API**
 - [ ] Add API Gateway to `ApiStack.js`
 - [ ] Create VTL template for `/drugs/search`
 - [ ] Create VTL template for `/drugs/{id}`
 - [ ] Configure API key auth
 - [ ] Deploy API stack
-- [ ] Test endpoints via curl/Postman:
-  - Search for "prozac" → returns results
-  - Search for "flu" → returns fluoxetine variants
-  - Get drug by NDC → returns full record
-- [ ] Document API endpoints in README
+
+**Part B: CLI Testing (⏸️ PAUSE HERE)**
+- [ ] Test search endpoints via AWS CLI:
+  ```bash
+  # Test 1: Brand name search
+  aws dynamodb query --table-name pocket-pharmacist \
+    --index-name SearchTokenIndex \
+    --key-condition-expression "PK = :pk AND begins_with(SK, :prefix)" \
+    --expression-attribute-values '{":pk":{"S":"SEARCH#DRUG"},":prefix":{"S":"token#prozac"}}'
+
+  # Test 2: Ingredient search
+  aws dynamodb query ... --expression-attribute-values '{..., ":prefix":{"S":"token#fluoxetine"}}'
+
+  # Test 3: NDC partial search
+  aws dynamodb query ... --expression-attribute-values '{..., ":prefix":{"S":"token#00002"}}'
+
+  # Test 4: Multi-ingredient (check tokenization)
+  aws dynamodb query ... --expression-attribute-values '{..., ":prefix":{"S":"token#atorvastatin"}}'
+  ```
+
+- [ ] Validate tokenization quality:
+  - No stop words in results (`the`, `and`, etc.)
+  - All tokens ≥ 3 characters
+  - Brand names split correctly (`Prozac|Sarafem` → both searchable)
+  - Ingredient combos split correctly (`atorvastatin / amlodipine` → both searchable)
+
+- [ ] Test edge cases:
+  - Short query (2 chars) - should fail validation
+  - Special characters - should filter safely
+  - Pure numbers (e.g., "500") - should return results
+
+- [ ] Measure performance:
+  - Query latency (target: P95 < 500ms)
+  - Result relevance (matched field makes sense)
+
+- [ ] Test API Gateway endpoints:
+  - `GET /drugs/search?q=prozac` via curl
+  - `GET /drugs/{id}` via curl
+  - Verify CORS headers
+  - Test error handling (invalid queries, not found)
+
+**Part C: Iterate if Needed**
+- [ ] If tokenization quality issues found:
+  - Adjust stop word list
+  - Modify field-specific handling
+  - Re-run Glue sync job
+  - Repeat CLI testing
 
 **Success Criteria**:
-- `/drugs/search?q=prozac` returns results in < 500ms
-- VTL templates correctly map DynamoDB responses
-- No Lambda cold starts (because no Lambda!)
-- API handles errors gracefully (invalid queries, not found)
+- ✅ Search queries return expected drugs
+- ✅ Tokenization quality meets standards (no noise)
+- ✅ Query latency < 500ms (P95)
+- ✅ API handles errors gracefully
+- ✅ No Lambda cold starts (because no Lambda!)
+- ✅ All stakeholders approve search quality
+
+**⏸️ PAUSE POINT**: Only proceed to Phase 4 (Frontend) after CLI validation passes
 
 ---
 
@@ -633,16 +835,21 @@ Following RAWS principle: **"No local simulation - test against real AWS resourc
 ## Open Questions and Future Considerations
 
 ### v0.2 Design Decisions (Resolved)
-1. **Search pattern**: ✅ Unified domain pattern (`SEARCH#DPC`) - single query across all fields
+1. **Search pattern**: ✅ Unified entity pattern (`SEARCH#DRUG`) - single query across all fields
 2. **Field metadata**: ✅ Included in SK (`token#word#field#DRUG#id`) for highlighting and ranking
-3. **Tokenization**: ✅ One item per word (no progressive prefixes) - DynamoDB `begins_with` handles it
-4. **Multi-value fields**: ✅ Split by delimiter (` / ` for ingredients, `|` for brands)
+3. **Tokenization**: ✅ Split on space/slash/pipe, min 3 chars, 60+ stop words, keep digits
+4. **Multi-value fields**: ✅ Split by ALL delimiters: space `" "`, slash `"/"`, pipe `"|"`
+5. **Table naming**: ✅ `pocket-pharmacist` (generic single-table design for future entities)
+6. **Batch loading**: ✅ PySpark `explode_outer` + boto3 `batch_writer` + `foreachPartition`
 
-### v0.2 Open Questions
-1. **Search tokenization**: Min prefix length = 3 chars? Max tokens per drug?
-2. **API pagination**: Client-side or server-side for v0.2? (Lean toward client-side)
-3. **Authentication**: API key sufficient for v0.2, Cognito in v0.3+
-4. **Error handling**: Show user-friendly messages, log details server-side
+### v0.2 Resolved Questions (Planning Session 2025-10-10)
+1. **Search tokenization**: ✅ Min prefix = 3 chars globally (field-specific in future: NDC=5)
+2. **Max tokens per drug**: ✅ 50 tokens (prevents outliers from bloating index)
+3. **API pagination**: ✅ Client-side for v0.2, server-side in v0.3+
+4. **Authentication**: ✅ API key sufficient for v0.2, Cognito in v0.3+
+5. **Error handling**: ✅ Show user-friendly messages, log details server-side
+6. **Dosage fields**: ✅ Excluded from search (display-only attributes)
+7. **Digit handling**: ✅ Keep digits in tokens (valid search terms like "500")
 
 ### v0.3+ Enhancements
 - **Advanced search**: Multi-field queries (name AND ingredient)

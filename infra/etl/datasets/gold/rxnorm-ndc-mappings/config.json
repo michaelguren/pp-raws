@@ -1,0 +1,35 @@
+{
+  "dataset": "rxnorm-ndc-mappings",
+  "description": "RxNORM to NDC mappings GOLD layer - Temporally versioned with status partitioning",
+  "layer": "gold",
+  "data_size_category": "medium",
+  "source_datasets": ["rxnorm-ndc-mappings"],
+  "schedule": {
+    "enabled": false,
+    "expression": "cron(0 4 5 * ? *)",
+    "description": "Monthly on the 5th at 4am (after silver layer completes)"
+  },
+  "dependencies": {
+    "silver_tables": ["silver_rxnorm_ndc_mappings"]
+  },
+  "temporal_config": {
+    "business_key": ["rxcui", "ndc_11"],
+    "business_columns": [
+      "ndc_raw",
+      "str",
+      "tty",
+      "qa_ndc_length",
+      "qa_ndc_is_numeric",
+      "meta_release_date"
+    ]
+  },
+  "partitioning": {
+    "strategy": "status",
+    "values": ["current", "historical"]
+  },
+  "data_quality": {
+    "critical_null_threshold": 0.01,
+    "required_columns": ["rxcui", "ndc_11", "version_id", "active_from", "active_to", "status"],
+    "expected_record_count_min": 100000
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "dataset": "fda-all-ndcs",
+  "description": "FDA All NDCs GOLD layer - Temporally versioned FDA drug data with status partitioning",
+  "layer": "gold",
+  "data_size_category": "medium",
+  "source_datasets": ["fda-all-ndc"],
+  "schedule": {
+    "enabled": false,
+    "expression": "cron(0 9 * * ? *)",
+    "description": "Run after silver layer completes"
+  },
+  "dependencies": {
+    "silver_tables": ["silver_fda_all_ndc"]
+  },
+  "temporal_config": {
+    "business_key": "ndc_11",
+    "business_columns": [
+      "ndc_5",
+      "marketing_category",
+      "product_type",
+      "proprietary_name",
+      "dosage_form",
+      "application_number",
+      "dea_schedule",
+      "package_description",
+      "active_numerator_strength",
+      "active_ingredient_unit",
+      "spl_id",
+      "marketing_start_date",
+      "marketing_end_date",
+      "billing_unit",
+      "nsde_flag"
+    ]
+  },
+  "partitioning": {
+    "strategy": "status",
+    "values": ["current", "historical"]
+  },
+  "data_quality": {
+    "critical_null_threshold": 0.05,
+    "required_columns": ["ndc_11", "version_id", "active_from", "active_to", "status"],
+    "expected_record_count_min": 10000
+  }
+}

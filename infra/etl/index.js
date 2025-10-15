@@ -4,16 +4,25 @@ const cdk = require("aws-cdk-lib");
 // Import core stack
 const { EtlCoreStack } = require("./EtlCoreStack");
 
-// Import dataset stacks
-const { FdaNsdeStack } = require("./datasets/fda-nsde/FdaNsdeStack");
-const { FdaCderStack } = require("./datasets/fda-cder/FdaCderStack");
-const { FdaAllNdcStack } = require("./datasets/fda-all-ndc/FdaAllNdcStack");
-const { RxnormStack } = require("./datasets/rxnorm/RxnormStack");
-const { RxnormSplMappingsStack } = require("./datasets/rxnorm-spl-mappings/RxnormSplMappingsStack");
-const { RxClassStack } = require("./datasets/rxclass/RxClassStack");
-const { RxclassDrugMembersStack } = require("./datasets/rxclass-drug-members/RxclassDrugMembersStack");
-const { RxnormProductsStack } = require("./datasets/rxnorm-products/RxnormProductsStack");
-const { DrugProductCodesetsStack } = require("./datasets/drug-product-codesets/DrugProductCodesetsStack");
+// Import dataset stacks - Bronze
+const { FdaNsdeStack } = require("./datasets/bronze/fda-nsde/FdaNsdeStack");
+const { FdaCderStack } = require("./datasets/bronze/fda-cder/FdaCderStack");
+const { RxnormStack } = require("./datasets/bronze/rxnorm/RxnormStack");
+const { RxnormSplMappingsStack } = require("./datasets/bronze/rxnorm-spl-mappings/RxnormSplMappingsStack");
+const { RxClassStack } = require("./datasets/bronze/rxclass/RxClassStack");
+const { RxclassDrugMembersStack } = require("./datasets/bronze/rxclass-drug-members/RxclassDrugMembersStack");
+
+// Import dataset stacks - Silver
+const { FdaAllNdcStack } = require("./datasets/silver/fda-all-ndc/FdaAllNdcStack");
+const { RxnormProductsStack } = require("./datasets/silver/rxnorm-products/RxnormProductsStack");
+const { RxnormNdcMappingsStack } = require("./datasets/silver/rxnorm-ndc-mappings/RxnormNdcMappingsStack");
+
+// Import dataset stacks - Gold
+const { GoldFdaAllNdcsStack } = require("./datasets/gold/fda-all-ndcs/GoldFdaAllNdcsStack");
+const { GoldRxnormProductsStack } = require("./datasets/gold/rxnorm-products/GoldRxnormProductsStack");
+const { GoldRxnormNdcMappingsStack } = require("./datasets/gold/rxnorm-ndc-mappings/GoldRxnormNdcMappingsStack");
+const { GoldRxnormProductClassificationsStack } = require("./datasets/gold/rxnorm-product-classifications/GoldRxnormProductClassificationsStack");
+const { GoldDrugsSyncStack } = require("./datasets/gold/drugs-sync/GoldDrugsSyncStack");
 
 const app = new cdk.App();
 
@@ -86,12 +95,47 @@ const rxnormProductsStack = new RxnormProductsStack(app, "pp-dw-etl-rxnorm-produ
 });
 rxnormProductsStack.addDependency(etlCoreStack);
 
-const drugProductCodesetsStack = new DrugProductCodesetsStack(app, "pp-dw-etl-drug-product-codesets", {
+const rxnormNdcMappingsStack = new RxnormNdcMappingsStack(app, "pp-dw-etl-rxnorm-ndc-mappings", {
   env,
   etlCoreStack,
-  description: "Drug Product Codesets Gold Layer - Combined FDA NDC and RxNORM product data"
+  description: "RxNORM NDC Mappings Silver Layer - RxCUI to NDC mappings extracted from RXNSAT"
 });
-drugProductCodesetsStack.addDependency(etlCoreStack);
+rxnormNdcMappingsStack.addDependency(etlCoreStack);
+
+const goldFdaAllNdcsStack = new GoldFdaAllNdcsStack(app, "pp-dw-etl-gold-fda-all-ndcs", {
+  env,
+  etlCoreStack,
+  description: "Gold FDA All NDCs - Temporally versioned FDA drug data with status partitioning"
+});
+goldFdaAllNdcsStack.addDependency(etlCoreStack);
+
+const goldRxnormProductsStack = new GoldRxnormProductsStack(app, "pp-dw-etl-gold-rxnorm-products", {
+  env,
+  etlCoreStack,
+  description: "Gold RxNORM Products - Temporally versioned RxNORM drug data with status partitioning"
+});
+goldRxnormProductsStack.addDependency(etlCoreStack);
+
+const goldRxnormNdcMappingsStack = new GoldRxnormNdcMappingsStack(app, "pp-dw-etl-gold-rxnorm-ndc-mappings", {
+  env,
+  etlCoreStack,
+  description: "Gold RxNORM NDC Mappings - Temporally versioned RxCUI-to-NDC mappings with status partitioning"
+});
+goldRxnormNdcMappingsStack.addDependency(etlCoreStack);
+
+const goldRxnormProductClassificationsStack = new GoldRxnormProductClassificationsStack(app, "pp-dw-etl-gold-rxnorm-product-classifications", {
+  env,
+  etlCoreStack,
+  description: "Gold RxNORM Product Classifications - Temporally versioned drug-class relationships with status partitioning"
+});
+goldRxnormProductClassificationsStack.addDependency(etlCoreStack);
+
+const goldDrugsSyncStack = new GoldDrugsSyncStack(app, "pp-dw-etl-gold-drugs-sync", {
+  env,
+  etlCoreStack,
+  description: "Gold Drugs Sync - Syncs drug_product_codesets from Gold layer to DynamoDB"
+});
+goldDrugsSyncStack.addDependency(etlCoreStack);
 
 // Add tags to all ETL stacks
 cdk.Tags.of(app).add("Project", "pp-dw");
