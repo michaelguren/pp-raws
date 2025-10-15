@@ -2,8 +2,9 @@
 Silver RxNORM NDC Mapping Job - Extract and validate NDC mappings from RXNSAT
 
 Reads bronze RXNSAT table and silver rxnorm_products table.
-Filters for SAB='RXNORM' NDC attributes (Section 6.0 of RxNORM docs).
-SAB='RXNORM' provides NLM-asserted, normalized 11-digit NDCs in HIPAA format (no dashes).
+Filters for SAB='RXNORM' AND CVF='4096' NDC attributes:
+- SAB='RXNORM': NLM-asserted, normalized 11-digit NDCs in HIPAA format (Section 6.0)
+- CVF='4096': Current Prescribable Content subset (prescribable drugs only)
 Other sources (CVX, GS, MMSL, MMX, MTHSPL, NDDF, VANDF) have various formats and are excluded.
 
 Enriches with drug names from rxnorm_products (prescribable products only: SCD, SBD, GPCK, BPCK).
@@ -78,13 +79,15 @@ print(f"  rxnorm_products: {rxnorm_products_df.count():,} records")
 
 print("\n[2/4] Extracting NDC mappings from RXNSAT...")
 
-# Filter for NDC attributes from SAB='RXNORM' only
-# Per RxNORM documentation (Section 6.0), SAB='RXNORM' provides NLM-asserted,
-# normalized 11-digit NDCs in HIPAA format (no dashes). Other sources (CVX, GS,
-# MMSL, MMX, MTHSPL, NDDF, VANDF) have various formats (6-4-2, 5-3-2, etc.)
+# Filter for NDC attributes from SAB='RXNORM' with CVF='4096' (prescribable only)
+# Per RxNORM documentation:
+# - Section 6.0: SAB='RXNORM' provides NLM-asserted, normalized 11-digit NDCs in HIPAA format
+# - CVF='4096': Current Prescribable Content subset (prescribable drugs only)
+# Other sources (CVX, GS, MMSL, MMX, MTHSPL, NDDF, VANDF) have various formats and are excluded.
 ndc_mappings = rxnsat_df.filter(
     (F.col("ATN") == "NDC") &
-    (F.col("SAB") == "RXNORM")
+    (F.col("SAB") == "RXNORM") &
+    (F.col("CVF") == "4096")
 ).select(
     F.col("RXCUI").alias("rxcui"),
     F.col("ATV").alias("ndc_11"),  # Already 11-digit format from RXNORM
@@ -93,7 +96,7 @@ ndc_mappings = rxnsat_df.filter(
 )
 
 initial_count = ndc_mappings.count()
-print(f"  Extracted {initial_count:,} normalized NDC mappings (SAB=RXNORM)")
+print(f"  Extracted {initial_count:,} prescribable NDC mappings (SAB=RXNORM, CVF=4096)")
 
 # ============================================================================
 # DATA QUALITY VALIDATION
@@ -178,7 +181,7 @@ ndc_mappings_enriched.write.mode("overwrite").option(
 # ============================================================================
 
 print(f"\n✓ Silver RxNORM NDC Mapping ETL completed")
-print(f"  Input records (SAB=RXNORM): {initial_count:,}")
+print(f"  Input records (SAB=RXNORM, CVF=4096): {initial_count:,}")
 print(f"  Valid NDCs (11-digit HIPAA format): {valid_count:,}")
 print(f"  Invalid NDCs filtered: {invalid_count:,}")
 print(f"  Final silver records: {final_count:,}")
