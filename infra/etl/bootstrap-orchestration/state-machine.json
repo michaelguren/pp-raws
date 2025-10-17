@@ -1,0 +1,286 @@
+{
+  "Comment": "ETL Bootstrap Orchestration - One-time full pipeline run with job and crawler orchestration",
+  "StartAt": "StartBronzeJobs",
+  "States": {
+    "StartBronzeJobs": {
+      "Type": "Parallel",
+      "Comment": "Start all bronze jobs in parallel",
+      "Branches": [
+        {
+          "StartAt": "BronzeJob_fda-nsde",
+          "States": {
+            "BronzeJob_fda-nsde": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName.$": "$.bronzeJobName_fda_nsde"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "BronzeJob_fda-cder",
+          "States": {
+            "BronzeJob_fda-cder": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName.$": "$.bronzeJobName_fda_cder"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "BronzeJob_rxnorm",
+          "States": {
+            "BronzeJob_rxnorm": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName.$": "$.bronzeJobName_rxnorm"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "BronzeJob_rxnorm-spl-mappings",
+          "States": {
+            "BronzeJob_rxnorm-spl-mappings": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName.$": "$.bronzeJobName_rxnorm_spl_mappings"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "BronzeJob_rxclass",
+          "States": {
+            "BronzeJob_rxclass": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName.$": "$.bronzeJobName_rxclass"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "BronzeJob_rxclass-drug-members",
+          "States": {
+            "BronzeJob_rxclass-drug-members": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName.$": "$.bronzeJobName_rxclass_drug_members"
+              },
+              "End": true
+            }
+          }
+        }
+      ],
+      "Next": "CheckBronzeTables"
+    },
+    "CheckBronzeTables": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:pp-dw-etl-check-tables",
+      "Parameters": {
+        "database.$": "$.bronzeDatabase",
+        "tables.$": "$.bronzeExpectedTables"
+      },
+      "Next": "BronzeTablesExist?",
+      "ResultPath": "$.bronzeTableCheck"
+    },
+    "BronzeTablesExist?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.bronzeTableCheck.exists",
+          "BooleanEquals": true,
+          "Next": "StartSilverJobs"
+        }
+      ],
+      "Default": "StartBronzeCrawlers"
+    },
+    "StartBronzeCrawlers": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:pp-dw-etl-start-crawlers",
+      "Parameters": {
+        "crawlerNames.$": "$.bronzeCrawlerNames"
+      },
+      "Next": "WaitForBronzeCrawlers",
+      "ResultPath": "$.bronzeCrawlerStatus"
+    },
+    "WaitForBronzeCrawlers": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Comment": "Wait for crawlers to complete catalog updates",
+      "Next": "StartSilverJobs"
+    },
+    "StartSilverJobs": {
+      "Type": "Parallel",
+      "Comment": "Start all silver jobs in parallel",
+      "Branches": [
+        {
+          "StartAt": "SilverJob_rxnorm-products",
+          "States": {
+            "SilverJob_rxnorm-products": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName.$": "$.silverJobName_rxnorm_products"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "SilverJob_rxnorm-ndc-mappings",
+          "States": {
+            "SilverJob_rxnorm-ndc-mappings": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName.$": "$.silverJobName_rxnorm_ndc_mappings"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "SilverJob_fda-all-ndc",
+          "States": {
+            "SilverJob_fda-all-ndc": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName.$": "$.silverJobName_fda_all_ndc"
+              },
+              "End": true
+            }
+          }
+        }
+      ],
+      "Next": "CheckSilverTables"
+    },
+    "CheckSilverTables": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:pp-dw-etl-check-tables",
+      "Parameters": {
+        "database.$": "$.silverDatabase",
+        "tables.$": "$.silverExpectedTables"
+      },
+      "Next": "SilverTablesExist?",
+      "ResultPath": "$.silverTableCheck"
+    },
+    "SilverTablesExist?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.silverTableCheck.exists",
+          "BooleanEquals": true,
+          "Next": "StartGoldJobSequence"
+        }
+      ],
+      "Default": "StartSilverCrawlers"
+    },
+    "StartSilverCrawlers": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:pp-dw-etl-start-crawlers",
+      "Parameters": {
+        "crawlerNames.$": "$.silverCrawlerNames"
+      },
+      "Next": "WaitForSilverCrawlers",
+      "ResultPath": "$.silverCrawlerStatus"
+    },
+    "WaitForSilverCrawlers": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Comment": "Wait for crawlers to complete catalog updates",
+      "Next": "StartGoldJobSequence"
+    },
+    "StartGoldJobSequence": {
+      "Type": "Pass",
+      "Comment": "Initialize gold job sequencing",
+      "Next": "GoldJob_rxnorm-products"
+    },
+    "GoldJob_rxnorm-products": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName.$": "$.goldJobName_rxnorm_products"
+      },
+      "Next": "GoldJob_rxnorm-product-classifications"
+    },
+    "GoldJob_rxnorm-product-classifications": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName.$": "$.goldJobName_rxnorm_product_classifications"
+      },
+      "Next": "GoldJob_rxnorm-ndc-mappings"
+    },
+    "GoldJob_rxnorm-ndc-mappings": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName.$": "$.goldJobName_rxnorm_ndc_mappings"
+      },
+      "Next": "GoldJob_fda-all-ndcs"
+    },
+    "GoldJob_fda-all-ndcs": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName.$": "$.goldJobName_fda_all_ndcs"
+      },
+      "Next": "CheckGoldTables"
+    },
+    "CheckGoldTables": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:pp-dw-etl-check-tables",
+      "Parameters": {
+        "database.$": "$.goldDatabase",
+        "tables.$": "$.goldExpectedTables"
+      },
+      "Next": "GoldTablesExist?",
+      "ResultPath": "$.goldTableCheck"
+    },
+    "GoldTablesExist?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.goldTableCheck.exists",
+          "BooleanEquals": true,
+          "Next": "OrchestrationComplete"
+        }
+      ],
+      "Default": "StartGoldCrawlers"
+    },
+    "StartGoldCrawlers": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:pp-dw-etl-start-crawlers",
+      "Parameters": {
+        "crawlerNames.$": "$.goldCrawlerNames"
+      },
+      "Next": "WaitForGoldCrawlers",
+      "ResultPath": "$.goldCrawlerStatus"
+    },
+    "WaitForGoldCrawlers": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Comment": "Wait for crawlers to complete catalog updates",
+      "Next": "OrchestrationComplete"
+    },
+    "OrchestrationComplete": {
+      "Type": "Succeed",
+      "Comment": "All ETL jobs and crawlers completed successfully"
+    }
+  }
+}

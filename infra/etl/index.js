@@ -4,6 +4,9 @@ const cdk = require("aws-cdk-lib");
 // Import core stack
 const { EtlCoreStack } = require("./EtlCoreStack");
 
+// Import bootstrap orchestration stack
+const { EtlOrchestrationStack } = require("./bootstrap-orchestration/EtlOrchestrationStack");
+
 // Import dataset stacks - Bronze
 const { FdaNsdeStack } = require("./datasets/bronze/fda-nsde/FdaNsdeStack");
 const { FdaCderStack } = require("./datasets/bronze/fda-cder/FdaCderStack");
@@ -37,6 +40,15 @@ const etlCoreStack = new EtlCoreStack(app, "pp-dw-etl-core", {
   env,
   description: "Core ETL infrastructure: S3 bucket, Glue databases, IAM roles"
 });
+
+// Deploy bootstrap orchestration infrastructure (Step Functions, Lambda)
+// This runs all bronze → silver → gold jobs in sequence, one time
+const etlOrchestrationStack = new EtlOrchestrationStack(app, "pp-dw-etl-bootstrap-orchestration", {
+  env,
+  etlCoreStack,
+  description: "ETL Bootstrap Orchestration: One-time initialization step function to run all bronze→silver→gold jobs"
+});
+etlOrchestrationStack.addDependency(etlCoreStack);
 
 // Deploy dataset stacks with dependency on core stack
 const fdaNsdeStack = new FdaNsdeStack(app, "pp-dw-etl-fda-nsde", {

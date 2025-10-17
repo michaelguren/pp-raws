@@ -1,0 +1,25 @@
+{
+  "bronze_jobs": [
+    "fda-nsde",
+    "fda-cder",
+    "rxnorm",
+    "rxnorm-spl-mappings",
+    "rxclass",
+    "rxclass-drug-members"
+  ],
+  "silver_jobs": [
+    "rxnorm-products",
+    "rxnorm-ndc-mappings",
+    "fda-all-ndc"
+  ],
+  "gold_jobs_sequence": [
+    "rxnorm-products",
+    "rxnorm-product-classifications",
+    "rxnorm-ndc-mappings",
+    "fda-all-ndcs"
+  ],
+  "crawler_wait_time_seconds": 300,
+  "max_crawler_wait_minutes": 30,
+  "glue_job_poll_interval_seconds": 30,
+  "max_glue_job_wait_minutes": 120
+}

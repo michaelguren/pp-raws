@@ -82,13 +82,21 @@ print(f"Loaded {rxnsat.count()} RXNSAT records")
 # STEP 2: Filter to Prescribable Products (CVF='4096')
 # ============================================================================
 
-print("Filtering to prescribable products (SCD, SBD, GPCK, BPCK with CVF='4096')...")
+print("Filtering to prescribable products (SCD, SBD, GPCK, BPCK with CVF='4096' and SUPPRESS='N')...")
 
 # Base product selection (equivalent to legacy lines 37-46)
+# CVF='4096': Current Prescribable Content
+# SUPPRESS='N': Not suppressed/obsolete (treat NULL/empty as 'N')
 base_products = rxnconso.filter(
     (F.col('TTY').isin(['SCD', 'SBD', 'GPCK', 'BPCK'])) &
     (F.col('SAB') == 'RXNORM') &
-    (F.col('CVF') == '4096')
+    (F.col('CVF') == '4096') &
+    (
+        F.when(
+            (F.col('SUPPRESS').isNull()) | (F.col('SUPPRESS') == ''),
+            F.lit('N')
+        ).otherwise(F.col('SUPPRESS')) == 'N'
+    )
 ).select(
     'RXCUI',
     'TTY',
@@ -103,15 +111,29 @@ print(f"Found {base_products.count()} prescribable products")
 
 print("Extracting ingredient names with priority: MIN > PIN > IN...")
 
-# Filter relationships to RXNORM + CVF='4096'
+# Filter relationships to RXNORM + CVF='4096' + SUPPRESS='N'
+# RXNREL may not have SUPPRESS column, so we only filter if it exists
 rxnrel_filtered = rxnrel.filter(
     (F.col('SAB') == 'RXNORM') &
     (F.col('CVF') == '4096')
 )
+if 'SUPPRESS' in rxnrel.columns:
+    rxnrel_filtered = rxnrel_filtered.filter(
+        F.when(
+            (F.col('SUPPRESS').isNull()) | (F.col('SUPPRESS') == ''),
+            F.lit('N')
+        ).otherwise(F.col('SUPPRESS')) == 'N'
+    )
 
 rxnconso_filtered = rxnconso.filter(
     (F.col('SAB') == 'RXNORM') &
-    (F.col('CVF') == '4096')
+    (F.col('CVF') == '4096') &
+    (
+        F.when(
+            (F.col('SUPPRESS').isNull()) | (F.col('SUPPRESS') == ''),
+            F.lit('N')
+        ).otherwise(F.col('SUPPRESS')) == 'N'
+    )
 )
 
 # For SCD: Get ingredients via consists_of -> has_precise_ingredient (PIN)
@@ -220,10 +242,20 @@ print("Ingredient names extracted")
 
 print("Extracting drug strengths from RXNSAT...")
 
-strengths = rxnsat.filter(
+# Filter for strengths with CVF='4096' and SUPPRESS='N'
+strengths_filtered = rxnsat.filter(
     (F.col('ATN') == 'RXN_AVAILABLE_STRENGTH') &
     (F.col('CVF') == '4096')
-).select(
+)
+if 'SUPPRESS' in rxnsat.columns:
+    strengths_filtered = strengths_filtered.filter(
+        F.when(
+            (F.col('SUPPRESS').isNull()) | (F.col('SUPPRESS') == ''),
+            F.lit('N')
+        ).otherwise(F.col('SUPPRESS')) == 'N'
+    )
+
+strengths = strengths_filtered.select(
     'RXCUI',
     F.lower(F.col('ATV')).alias('raw_strength')
 ).groupBy('RXCUI').agg(
