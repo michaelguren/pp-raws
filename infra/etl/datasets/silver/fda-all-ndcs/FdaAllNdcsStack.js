@@ -4,11 +4,11 @@ const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
 const path = require("path");
 
 /**
- * FDA All NDC Silver Layer Stack
+ * FDA All NDCs Silver Layer Stack
  * Combines NSDE and CDER data with custom transformation logic
  * Silver jobs are dataset-specific and don't use the factory pattern
  */
-class FdaAllNdcStack extends cdk.Stack {
+class FdaAllNdcsStack extends cdk.Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
 
@@ -145,4 +145,4 @@ class FdaAllNdcStack extends cdk.Stack {
   }
 }
 
-module.exports = { FdaAllNdcStack };
+module.exports = { FdaAllNdcsStack };

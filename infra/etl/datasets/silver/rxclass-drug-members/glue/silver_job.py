@@ -1,6 +1,6 @@
 """
-RxClass Drug Members ETL Job - Drug-First API Collection
-Reads rxnorm_products silver table, fetches ALL class relationships for each drug via RxNav byRxcui API
+RxClass Drug Members Silver Layer Job - Drug-First API Enrichment
+Reads rxnorm_products silver table and enriches with class relationships via RxNav byRxcui API
 
 Attribution: This product uses publicly available data from the U.S. National Library of Medicine (NLM),
 National Institutes of Health, Department of Health and Human Services; NLM is not responsible for the
@@ -19,8 +19,8 @@ from etl_runtime_utils import build_raw_path_with_run_id, fetch_json_with_retry,
 
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
-    'JOB_NAME', 'dataset', 'bronze_database', 'silver_database', 'rxnorm_products_table',
-    'api_base_url', 'raw_path', 'bronze_path', 'compression_codec'
+    'JOB_NAME', 'dataset', 'silver_database', 'rxnorm_products_table',
+    'api_base_url', 'raw_path', 'silver_path', 'compression_codec'
 ])
 
 # Initialize Glue
@@ -38,20 +38,19 @@ run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # Get configuration from job arguments
 dataset = args['dataset']
-bronze_database = args['bronze_database']
 silver_database = args['silver_database']
 rxnorm_products_table = args['rxnorm_products_table']
 api_base_url = args['api_base_url']
 
 # Build S3 paths (raw includes run_id partition for lineage tracking)
 raw_s3_path = build_raw_path_with_run_id(args['raw_path'], run_id)
-bronze_s3_path = args['bronze_path']
+silver_s3_path = args['silver_path']
 
-print(f"Starting RxClass Drug Members ETL job (Drug-First Approach)")
+print(f"Starting RxClass Drug Members Silver Layer job (Drug-First API Enrichment)")
 print(f"Dataset: {dataset}")
 print(f"Run ID: {run_id}")
 print(f"Raw path: {raw_s3_path}")
-print(f"Bronze path: {bronze_s3_path}")
+print(f"Silver path: {silver_s3_path}")
 print(f"Source table: {silver_database}.{rxnorm_products_table}")
 print(f"API: {api_base_url}")
 print(f"Attribution: Data from U.S. National Library of Medicine (NLM)")
@@ -88,8 +87,8 @@ def process_partition(partition_rows):
 
     for row in partition_rows:
         partition_count += 1
-        product_rxcui = row.rxcui  # The product RXCUI we're querying
-        product_tty = row.tty      # The product TTY (SCD, SBD, GPCK, BPCK)
+        product_rxcui = row.rxnorm_rxcui  # The product RXCUI we're querying
+        product_tty = row.rxnorm_tty      # The product TTY (SCD, SBD, GPCK, BPCK)
 
         # Build API URL
         url = build_api_url(product_rxcui)
@@ -164,7 +163,7 @@ try:
     ).toDF()
 
     # Filter for non-null RXCUIs
-    products_df = products_df.filter(products_df.rxcui.isNotNull())
+    products_df = products_df.filter(products_df.rxnorm_rxcui.isNotNull())
 
     products_count = products_df.count()
     print(f"Found {products_count} prescribable products to process")
@@ -214,34 +213,34 @@ try:
     }
     save_json_to_s3(summary, f"{raw_s3_path}collection_summary.json")
 
-    # Step 3: Write to Bronze layer
-    print("Step 3: Writing to Bronze layer...")
+    # Step 3: Write to Silver layer
+    print("Step 3: Writing to Silver layer...")
 
     if relationship_count == 0:
-        raise Exception("No class relationship data collected - cannot proceed to Bronze layer")
+        raise Exception("No class relationship data collected - cannot proceed to Silver layer")
 
     print(f"DataFrame has {relationship_count} records")
     df.show(10, truncate=False)
 
-    # Write to Bronze layer (kill-and-fill approach)
-    print(f"Writing to Bronze layer: {bronze_s3_path}")
+    # Write to Silver layer (kill-and-fill approach)
+    print(f"Writing to Silver layer: {silver_s3_path}")
 
     df.write \
         .mode("overwrite") \
         .option("compression", args['compression_codec']) \
-        .parquet(bronze_s3_path)
+        .parquet(silver_s3_path)
 
-    print("Successfully wrote Bronze layer data")
+    print("Successfully wrote Silver layer data")
 
-    print("RxClass Drug Members ETL job completed successfully!")
+    print("RxClass Drug Members Silver Layer job completed successfully!")
     print(f"Total relationships processed: {relationship_count}")
     print(f"Total drugs processed: {products_count}")
     print(f"Average relationships per drug: {relationship_count / products_count:.1f}")
-    print(f"Bronze data location: {bronze_s3_path}")
-    print("Note: Run crawler manually via console if schema changes are needed")
+    print(f"Silver data location: {silver_s3_path}")
+    print("Note: Run crawler to update Glue catalog")
 
 except Exception as e:
-    print(f"ERROR: RxClass Drug Members ETL job failed: {str(e)}")
+    print(f"ERROR: RxClass Drug Members Silver Layer job failed: {str(e)}")
     raise e
 
 finally:

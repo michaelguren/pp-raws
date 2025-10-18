@@ -4,8 +4,8 @@ FDA GOLD Layer ETL Job - Temporal Versioning
 Applies temporal versioning (SCD Type 2 pattern) to FDA silver data.
 Tracks changes over time with active_from/active_to dates and status partitioning.
 
-Input: pp_dw_silver.fda_all_ndc
-Output: pp_dw_gold.fda_all_ndc (partitioned by status: current/historical)
+Input: pp_dw_silver.fda_all_ndcs
+Output: pp_dw_gold.fda_all_ndcs (partitioned by status: current/historical)
 """
 
 import sys

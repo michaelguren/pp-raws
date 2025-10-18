@@ -51,6 +51,55 @@ class EtlDeployUtils {
     };
   }
 
+  // Get table names for a dataset based on its config and layer
+  getTablesForDataset(layer, dataset) {
+    const path = require("path");
+    const fs = require("fs");
+
+    // Determine config path based on layer
+    const configPath = path.join(
+      __dirname,
+      "..",
+      "..",
+      "datasets",
+      layer,
+      dataset,
+      "config.json"
+    );
+
+    // Read config file
+    if (!fs.existsSync(configPath)) {
+      throw new Error(`Config not found for ${layer}/${dataset}: ${configPath}`);
+    }
+
+    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+
+    // Extract tables based on layer
+    if (layer === "bronze") {
+      // Multi-table datasets: Use file_table_mapping
+      if (config.file_table_mapping) {
+        return Object.values(config.file_table_mapping);
+      }
+      // RxNorm-style datasets: Use tables object keys
+      if (config.tables) {
+        return Object.keys(config.tables);
+      }
+      // Single-table datasets: Use dataset name
+      return [dataset];
+    } else if (layer === "silver") {
+      // Silver layer: Use output_table or convert dataset name
+      if (config.output_table) {
+        return [config.output_table];
+      }
+      return [dataset.replace(/-/g, "_")];
+    } else if (layer === "gold") {
+      // Gold layer: Convert dataset name (hyphens → underscores)
+      return [dataset.replace(/-/g, "_")];
+    }
+
+    throw new Error(`Unsupported layer: ${layer}`);
+  }
+
   // Resource naming helpers (includes all resource names: jobs, crawlers, databases)
   getResourceNames(dataset, tables) {
     const base = this.etl_resource_prefix;

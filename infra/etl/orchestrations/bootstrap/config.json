@@ -4,13 +4,13 @@
     "fda-cder",
     "rxnorm",
     "rxnorm-spl-mappings",
-    "rxclass",
-    "rxclass-drug-members"
+    "rxclass"
   ],
-  "silver_jobs": [
+  "silver_jobs_sequence": [
     "rxnorm-products",
+    "rxclass-drug-members",
     "rxnorm-ndc-mappings",
-    "fda-all-ndc"
+    "fda-all-ndcs"
   ],
   "gold_jobs_sequence": [
     "rxnorm-products",

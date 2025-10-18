@@ -9,7 +9,7 @@ Automated orchestration for running ETL jobs across the bronze, silver, and gold
 The orchestration system uses AWS Step Functions to coordinate:
 
 1. **Bronze Layer**: All jobs run in parallel, then crawlers are executed if needed
-2. **Silver Layer**: All jobs run in parallel, then crawlers are executed if needed
+2. **Silver Layer**: Jobs run sequentially with table checks and crawlers between each job (handles dependencies)
 3. **Gold Layer**: Jobs run in sequence (in a specific order), then crawlers are executed if needed
 
 ```
@@ -21,7 +21,7 @@ The orchestration system uses AWS Step Functions to coordinate:
 ┌─────────────────────────────────────────────────────────────┐
 │  BRONZE: Parallel Job Execution                             │
 │  - fda-nsde, fda-cder, rxnorm, rxnorm-spl-mappings          │
-│  - rxclass, rxclass-drug-members                             │
+│  - rxclass                                                   │
 └────────────────┬────────────────────────────────────────────┘
                  │
                  ▼
@@ -39,24 +39,20 @@ The orchestration system uses AWS Step Functions to coordinate:
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  SILVER: Parallel Job Execution                             │
-│  - rxnorm-products, rxnorm-ndc-mappings, fda-all-ndc        │
+│  SILVER: Sequential Job Execution with Table Checks         │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │ 1. rxnorm-products job                                │  │
+│  │    ↓ Check table → Run crawler if needed             │  │
+│  │ 2. rxclass-drug-members job (depends on #1)          │  │
+│  │    ↓ Check table → Run crawler if needed             │  │
+│  │ 3. rxnorm-ndc-mappings job                            │  │
+│  │    ↓ Check table → Run crawler if needed             │  │
+│  │ 4. fda-all-ndcs job                                   │  │
+│  │    ↓ Check table → Run crawler if needed             │  │
+│  └───────────────────────────────────────────────────────┘  │
 └────────────────┬────────────────────────────────────────────┘
                  │
                  ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Check Silver Tables Exist                                  │
-│  - Lambda: glue:GetTables                                   │
-└────────┬──────────────────────────────┬─────────────────────┘
-         │ Tables exist                 │ Missing tables
-         │                              ▼
-         │                    ┌─────────────────┐
-         │                    │  Run Crawlers   │
-         │                    └────────┬────────┘
-         │                             │
-         └─────────────────┬───────────┘
-                           │
-                           ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  GOLD: Sequential Job Execution (in order)                  │
 │  1. rxnorm-products                                         │
@@ -111,9 +107,10 @@ Verifies if expected tables exist in the Glue Data Catalog.
 
 ### 2. Step Functions: `state-machine.json`
 Orchestrates the entire ETL pipeline with:
-- Parallel job execution for bronze and silver
-- Sequential job execution for gold (in specified order)
-- Table existence validation between stages
+- Parallel job execution for bronze layer
+- Sequential job execution for silver layer with table checks and crawlers between each job (handles dependencies)
+- Sequential job execution for gold layer (in specified order) with table checks and crawlers at the end
+- Table existence validation after each job (silver) or after all jobs (bronze/gold)
 - Automatic crawler invocation when tables are missing
 - Synchronous job execution (waits for job completion)
 
@@ -268,41 +265,33 @@ Edit `orchestration-config.json` to adjust:
 
 To add new bronze/silver/gold jobs to orchestration:
 
-1. **Update orchestration-config.json:**
+1. **Update `config.json` in the orchestration directory:**
    ```json
    {
      "bronze_jobs": [..., "new-dataset"],
-     "silver_jobs": [..., "new-silver-dataset"],
+     "silver_jobs_sequence": [..., "new-silver-dataset"],
      "gold_jobs_sequence": [..., "new-gold-dataset"]
    }
    ```
 
-2. **Update state-machine.json:**
-   - Add new branch in `StartBronzeJobs` parallel state
-   - Add crawler branch in `RunBronzeCrawlers` parallel state
-   - Update table lists in input generation
+2. **Deploy the updated stack:**
+   ```bash
+   cd infra/etl
+   cdk deploy pp-dw-etl-bootstrap-orchestration
+   ```
 
-3. **Update EtlOrchestrationStack.js:**
-   - Add job/crawler name mappings in `generateExecutionInput()`
-   - Add expected table names
+The state machine will be automatically regenerated with the new jobs in the correct execution order. No manual state machine edits required!
 
 ### Changing Job Execution Order
 
-Edit `state-machine.json` gold section to change job sequence:
+**Silver Layer:** Edit the `silver_jobs_sequence` array in `config.json` to change the order jobs execute. Jobs will run sequentially in the order listed, with table checks and crawlers between each job to handle dependencies.
 
-```json
-"GoldJob_first": {
-  "Type": "Task",
-  "Resource": "arn:aws:states:::glue:startJobRun.sync",
-  "Parameters": {"JobName.$": "$.goldJobName_first"},
-  "Next": "GoldJob_second"
-},
-"GoldJob_second": {
-  "Type": "Task",
-  "Resource": "arn:aws:states:::glue:startJobRun.sync",
-  "Parameters": {"JobName.$": "$.goldJobName_second"},
-  "Next": "CheckGoldTables"
-}
+**Gold Layer:** Edit the `gold_jobs_sequence` array in `config.json` to change the order jobs execute. Jobs will run sequentially in the order listed.
+
+After changing the order, redeploy the stack:
+```bash
+cd infra/etl
+cdk deploy pp-dw-etl-bootstrap-orchestration
 ```
 
 ## Troubleshooting

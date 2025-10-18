@@ -36,7 +36,7 @@ class GoldRxnormNdcMappingsStack extends cdk.Stack {
 
     // Build paths using convention - GOLD layer paths
     const goldBasePath = `s3://${bucketName}/gold/${dataset}/`;
-    const goldScriptPath = `s3://${bucketName}/etl/datasets/${dataset}/glue/gold_job.py`;
+    const goldScriptPath = `s3://${bucketName}/etl/${dataset}/glue/gold_job.py`;
 
     // Temporal versioning library path
     const temporalLibPath = `s3://${bucketName}/etl/shared/runtime/temporal/`;
@@ -45,7 +45,7 @@ class GoldRxnormNdcMappingsStack extends cdk.Stack {
     new s3deploy.BucketDeployment(this, 'DeployGlueScript', {
       sources: [s3deploy.Source.asset(path.join(__dirname, 'glue'))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `etl/datasets/${dataset}/glue/`,
+      destinationKeyPrefix: `etl/${dataset}/glue/`,
       retainOnDelete: false
     });
 

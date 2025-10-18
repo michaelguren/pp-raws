@@ -21,7 +21,7 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     const datasetConfig = require("./config.json");
 
     // Load source dataset config to get table name
-    const fdaAllNdcConfig = require("../../silver/fda-all-ndc/config.json");
+    const fdaAllNdcsConfig = require("../../silver/fda-all-ndcs/config.json");
 
     // Compute database names from prefix
     const silverDatabase = `${etlConfig.database_prefix}_silver`;
@@ -31,12 +31,12 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     // Get worker configuration based on data size category
     const workerConfig = etlConfig.glue_worker_configs[datasetConfig.data_size_category];
 
-    // Silver source table name (hyphens → underscores)
-    const silverTable = fdaAllNdcConfig.dataset.replace(/-/g, '_');
+    // Silver source table name (use output_table if specified, otherwise convert dataset name)
+    const silverTable = fdaAllNdcsConfig.output_table || fdaAllNdcsConfig.dataset.replace(/-/g, '_');
 
     // Build paths using convention - GOLD layer paths
     const goldBasePath = `s3://${bucketName}/gold/${dataset}/`;
-    const goldScriptPath = `s3://${bucketName}/etl/datasets/${dataset}/glue/gold_job.py`;
+    const goldScriptPath = `s3://${bucketName}/etl/${dataset}/glue/gold_job.py`;
 
     // Temporal versioning library path
     const temporalLibPath = `s3://${bucketName}/etl/shared/runtime/temporal/`;
@@ -45,7 +45,7 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     new s3deploy.BucketDeployment(this, 'DeployGlueScript', {
       sources: [s3deploy.Source.asset(path.join(__dirname, 'glue'))],
       destinationBucket: dataWarehouseBucket,
-      destinationKeyPrefix: `etl/datasets/${dataset}/glue/`,
+      destinationKeyPrefix: `etl/${dataset}/glue/`,
       retainOnDelete: false
     });
 

@@ -1,8 +1,9 @@
 {
-  "dataset": "fda-all-ndc",
+  "dataset": "fda-all-ndcs",
   "description": "FDA All NDCs SILVER layer - Combined NSDE and CDER data with INNER JOIN",
   "data_size_category": "medium",
   "layer": "silver",
+  "output_table": "fda_all_ndcs",
   "source_datasets": ["fda-nsde", "fda-cder"],
   "schedule": {
     "enabled": false,

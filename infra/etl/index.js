@@ -5,7 +5,7 @@ const cdk = require("aws-cdk-lib");
 const { EtlCoreStack } = require("./EtlCoreStack");
 
 // Import bootstrap orchestration stack
-const { EtlOrchestrationStack } = require("./bootstrap-orchestration/EtlOrchestrationStack");
+const { EtlBootstrapOrchestrationStack } = require("./orchestrations/bootstrap/EtlBootstrapOrchestrationStack");
 
 // Import dataset stacks - Bronze
 const { FdaNsdeStack } = require("./datasets/bronze/fda-nsde/FdaNsdeStack");
@@ -13,12 +13,12 @@ const { FdaCderStack } = require("./datasets/bronze/fda-cder/FdaCderStack");
 const { RxnormStack } = require("./datasets/bronze/rxnorm/RxnormStack");
 const { RxnormSplMappingsStack } = require("./datasets/bronze/rxnorm-spl-mappings/RxnormSplMappingsStack");
 const { RxClassStack } = require("./datasets/bronze/rxclass/RxClassStack");
-const { RxclassDrugMembersStack } = require("./datasets/bronze/rxclass-drug-members/RxclassDrugMembersStack");
 
 // Import dataset stacks - Silver
-const { FdaAllNdcStack } = require("./datasets/silver/fda-all-ndc/FdaAllNdcStack");
+const { FdaAllNdcsStack } = require("./datasets/silver/fda-all-ndcs/FdaAllNdcsStack");
 const { RxnormProductsStack } = require("./datasets/silver/rxnorm-products/RxnormProductsStack");
 const { RxnormNdcMappingsStack } = require("./datasets/silver/rxnorm-ndc-mappings/RxnormNdcMappingsStack");
+const { RxclassDrugMembersStack } = require("./datasets/silver/rxclass-drug-members/RxclassDrugMembersStack");
 
 // Import dataset stacks - Gold
 const { GoldFdaAllNdcsStack } = require("./datasets/gold/fda-all-ndcs/GoldFdaAllNdcsStack");
@@ -43,12 +43,12 @@ const etlCoreStack = new EtlCoreStack(app, "pp-dw-etl-core", {
 
 // Deploy bootstrap orchestration infrastructure (Step Functions, Lambda)
 // This runs all bronze → silver → gold jobs in sequence, one time
-const etlOrchestrationStack = new EtlOrchestrationStack(app, "pp-dw-etl-bootstrap-orchestration", {
+const etlBootstrapOrchestrationStack = new EtlBootstrapOrchestrationStack(app, "pp-dw-etl-bootstrap-orchestration", {
   env,
   etlCoreStack,
   description: "ETL Bootstrap Orchestration: One-time initialization step function to run all bronze→silver→gold jobs"
 });
-etlOrchestrationStack.addDependency(etlCoreStack);
+etlBootstrapOrchestrationStack.addDependency(etlCoreStack);
 
 // Deploy dataset stacks with dependency on core stack
 const fdaNsdeStack = new FdaNsdeStack(app, "pp-dw-etl-fda-nsde", {
@@ -65,12 +65,12 @@ const fdaCderStack = new FdaCderStack(app, "pp-dw-etl-fda-cder", {
 });
 fdaCderStack.addDependency(etlCoreStack);
 
-const fdaAllNdcStack = new FdaAllNdcStack(app, "pp-dw-etl-fda-all-ndc", {
+const fdaAllNdcsStack = new FdaAllNdcsStack(app, "pp-dw-etl-fda-all-ndcs", {
   env,
   etlCoreStack,
-  description: "FDA All NDC Gold Layer - Combined NSDE and CDER data"
+  description: "FDA All NDCs Silver Layer - Combined NSDE and CDER data"
 });
-fdaAllNdcStack.addDependency(etlCoreStack);
+fdaAllNdcsStack.addDependency(etlCoreStack);
 
 const rxnormStack = new RxnormStack(app, "pp-dw-etl-rxnorm", {
   env,
@@ -93,12 +93,6 @@ const rxClassStack = new RxClassStack(app, "pp-dw-etl-rxclass", {
 });
 rxClassStack.addDependency(etlCoreStack);
 
-const rxclassDrugMembersStack = new RxclassDrugMembersStack(app, "pp-dw-etl-rxclass-drug-members", {
-  env,
-  etlCoreStack,
-  description: "RxClass Drug Members ETL pipeline - Drug relationships for each RxClass classification"
-});
-rxclassDrugMembersStack.addDependency(etlCoreStack);
 
 const rxnormProductsStack = new RxnormProductsStack(app, "pp-dw-etl-rxnorm-products", {
   env,
@@ -113,6 +107,13 @@ const rxnormNdcMappingsStack = new RxnormNdcMappingsStack(app, "pp-dw-etl-rxnorm
   description: "RxNORM NDC Mappings Silver Layer - RxCUI to NDC mappings extracted from RXNSAT"
 });
 rxnormNdcMappingsStack.addDependency(etlCoreStack);
+
+const rxclassDrugMembersStack = new RxclassDrugMembersStack(app, "pp-dw-etl-rxclass-drug-members", {
+  env,
+  etlCoreStack,
+  description: "RxClass Drug Members Silver Layer - Drug-to-class relationships enriched via NLM RxNav API"
+});
+rxclassDrugMembersStack.addDependency(etlCoreStack);
 
 const goldFdaAllNdcsStack = new GoldFdaAllNdcsStack(app, "pp-dw-etl-gold-fda-all-ndcs", {
   env,

@@ -88,7 +88,7 @@ s3://pp-dw-{account}/
 ├── bronze/{dataset}/{table}/      # Multi-table datasets
 ├── silver/{dataset}/              # Silver layer tables
 ├── gold/{dataset}/                # Gold layer tables (status-partitioned)
-└── etl/datasets/{dataset}/glue/   # Dataset-specific scripts
+└── etl/{dataset}/glue/            # Dataset-specific scripts
 ```
 
 ## Stack Types

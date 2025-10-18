@@ -1,19 +1,17 @@
 {
   "dataset": "rxclass-drug-members",
+  "layer": "silver",
   "description": "RxClass drug classifications for all prescribable products from NLM RxNav byRxcui API (drug-first approach)",
   "data_size_category": "large",
+  "source_dependencies": {
+    "silver": ["rxnorm_products"]
+  },
   "schedule": {
     "enabled": true,
     "expression": "cron(0 5 5 * ? *)",
     "description": "Monthly on the 5th at 5 AM (after RxNORM Products silver layer completes)"
   },
-  "dependencies": {
-    "rxnorm_products": {
-      "layer": "silver",
-      "table": "rxnorm_products",
-      "required_columns": ["rxcui", "tty", "str"]
-    }
-  },
+  "output_table": "rxclass_drug_members",
   "data_quality": {
     "critical_null_threshold": 0.01,
     "required_columns": ["class_id", "rxcui", "name"],
