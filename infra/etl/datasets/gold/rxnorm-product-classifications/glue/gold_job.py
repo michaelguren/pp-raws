@@ -5,7 +5,7 @@ Applies temporal versioning (SCD Type 2 pattern) to RxClass drug classification 
 Tracks changes over time with active_from/active_to dates and status partitioning.
 Supports bidirectional queries: drug→classes and class→drugs.
 
-Input: pp_dw_bronze.rxclass_drug_members
+Input: pp_dw_silver.rxclass_drug_members
 Output: pp_dw_gold.rxnorm_product_classifications (partitioned by status: current/historical)
 """
 
@@ -20,9 +20,9 @@ from pyspark.sql import functions as F  # type: ignore[import-not-found]
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'dataset',
-    'bronze_database', 'gold_database', 'gold_base_path',
+    'silver_database', 'gold_database', 'gold_base_path',
     'compression_codec', 'crawler_name',
-    'bronze_table', 'temporal_lib_path'
+    'silver_table', 'temporal_lib_path'
 ])
 
 # Initialize Glue
@@ -46,17 +46,17 @@ run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # Get configuration from job arguments
 dataset = args['dataset']
-bronze_database = args['bronze_database']
+silver_database = args['silver_database']
 gold_database = args['gold_database']
 gold_path = args['gold_base_path']
-bronze_table = args['bronze_table']
+silver_table = args['silver_table']
 gold_table = dataset.replace('-', '_')  # rxnorm-product-classifications → rxnorm_product_classifications
 
 print(f"=== Starting GOLD ETL for {dataset} ===")
-print(f"Bronze database: {bronze_database}")
+print(f"Silver database: {silver_database}")
 print(f"Gold database: {gold_database}")
 print(f"Gold path: {gold_path}")
-print(f"Bronze table: {bronze_table}")
+print(f"Silver table: {silver_table}")
 print(f"Gold table: {gold_table}")
 print(f"Run date: {run_date}")
 print(f"Run ID: {run_id}")
@@ -64,18 +64,18 @@ print(f"Mode: Temporal versioning (SCD Type 2) with composite key [rxcui, class_
 
 try:
     # ===========================
-    # Step 1: Read Bronze Data
+    # Step 1: Read Silver Data
     # ===========================
-    print("\n[1/4] Reading bronze data...")
+    print("\n[1/4] Reading silver data...")
 
-    bronze_df = glueContext.create_dynamic_frame.from_catalog(
-        database=bronze_database,
-        table_name=bronze_table
+    silver_df = glueContext.create_dynamic_frame.from_catalog(
+        database=silver_database,
+        table_name=silver_table
     ).toDF()
 
-    bronze_count = bronze_df.count()
-    print(f"Bronze records: {bronze_count:,}")
-    print(f"Bronze columns: {bronze_df.columns}")
+    silver_count = silver_df.count()
+    print(f"Silver records: {silver_count:,}")
+    print(f"Silver columns: {silver_df.columns}")
 
     # ===========================
     # Step 2: Transform Schema
@@ -83,7 +83,7 @@ try:
     print("\n[2/4] Transforming schema (cleaning column names)...")
 
     # Rename columns for clarity (drop verbose prefixes)
-    bronze_df = bronze_df \
+    silver_df = silver_df \
         .withColumnRenamed("product_rxcui", "rxcui") \
         .withColumnRenamed("product_tty", "tty") \
         .withColumnRenamed("rxclassminconceptitem_classid", "class_id") \
@@ -91,17 +91,17 @@ try:
         .withColumnRenamed("rxclassminconceptitem_classtype", "class_type")
 
     # Rename meta columns for gold layer consistency
-    if "meta_run_id" in bronze_df.columns:
-        bronze_df = bronze_df.withColumnRenamed("meta_run_id", "source_run_id")
+    if "meta_run_id" in silver_df.columns:
+        silver_df = silver_df.withColumnRenamed("meta_run_id", "source_run_id")
 
     # Add source_file metadata
-    bronze_df = bronze_df.withColumn("source_file", F.lit(f"bronze.{bronze_table}"))
+    silver_df = silver_df.withColumn("source_file", F.lit(f"silver.{silver_table}"))
 
-    print(f"Transformed columns: {bronze_df.columns}")
+    print(f"Transformed columns: {silver_df.columns}")
 
     # Sample data check
     print("\nSample records:")
-    bronze_df.select("rxcui", "class_id", "class_name", "class_type", "tty").show(5, truncate=False)
+    silver_df.select("rxcui", "class_id", "class_name", "class_type", "tty").show(5, truncate=False)
 
     # ===========================
     # Step 3: Apply Temporal Versioning
@@ -126,7 +126,7 @@ try:
     # Apply temporal versioning
     gold_df = apply_temporal_versioning(
         spark=spark,
-        incoming_df=bronze_df,
+        incoming_df=silver_df,
         existing_table=f"{gold_database}.{gold_table}",
         business_key=business_key,  # Composite key
         business_columns=business_columns,

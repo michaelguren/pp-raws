@@ -22,15 +22,15 @@ class GoldRxnormProductClassificationsStack extends cdk.Stack {
     const datasetConfig = require("./config.json");
 
     // Compute database names from prefix
-    const bronzeDatabase = `${etlConfig.database_prefix}_bronze`;
+    const silverDatabase = `${etlConfig.database_prefix}_silver`;
     const goldDatabase = `${etlConfig.database_prefix}_gold`;
     const dataset = datasetConfig.dataset;
 
     // Get worker configuration based on data size category
     const workerConfig = etlConfig.glue_worker_configs[datasetConfig.data_size_category];
 
-    // Bronze source table name (from dependencies)
-    const bronzeTable = "rxclass_drug_members";
+    // Silver source table name (from dependencies)
+    const silverTable = "rxclass_drug_members";
 
     // Build paths using convention - GOLD layer paths
     const goldBasePath = `s3://${bucketName}/gold/${dataset}/`;
@@ -91,15 +91,15 @@ class GoldRxnormProductClassificationsStack extends cdk.Stack {
         // Dataset and database configuration
         '--dataset': dataset,
         '--bucket_name': bucketName,
-        '--bronze_database': bronzeDatabase,
+        '--silver_database': silverDatabase,
         '--gold_database': goldDatabase,
 
         // Pre-computed paths
         '--gold_base_path': goldBasePath,
         '--temporal_lib_path': '/tmp',  // Glue extracts extra-py-files to /tmp
 
-        // Source table name from bronze layer
-        '--bronze_table': bronzeTable,
+        // Source table name from silver layer
+        '--silver_table': silverTable,
 
         // Compression and performance settings
         '--compression_codec': 'ZSTD',
