@@ -113,6 +113,7 @@ class EtlDeployUtils {
       silverJob: `${base}-silver-${dataset}`,
       goldJob: `${base}-gold-${dataset}`,
       // Crawler names
+      silverCrawler: `${base}-silver-${dataset}-crawler`,
       goldCrawler: `${base}-gold-${dataset}-crawler`,
     };
 
@@ -137,6 +138,42 @@ class EtlDeployUtils {
     }
 
     return names;
+  }
+
+  // Build table-to-crawler mapping for orchestration
+  getTableToCrawlerMap(layer, tables, names) {
+    const map = {};
+
+    if (layer === "bronze") {
+      if (tables.length === 1) {
+        // Single table: all tables map to the single crawler
+        map[tables[0].replace(/-/g, "_")] = names.bronzeCrawler;
+      } else {
+        // Multiple tables: each table has its own crawler
+        tables.forEach((table) => {
+          const camelKey = table
+            .split("-")
+            .map((part, i) =>
+              i === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1)
+            )
+            .join("");
+          const crawlerKey = `bronze${camelKey.charAt(0).toUpperCase() + camelKey.slice(1)}Crawler`;
+          map[table.replace(/-/g, "_")] = names[crawlerKey];
+        });
+      }
+    } else if (layer === "silver") {
+      // Silver: single crawler per dataset
+      tables.forEach(table => {
+        map[table] = names.silverCrawler;
+      });
+    } else if (layer === "gold") {
+      // Gold: single crawler per dataset
+      tables.forEach(table => {
+        map[table] = names.goldCrawler;
+      });
+    }
+
+    return map;
   }
 
   // S3 path builder

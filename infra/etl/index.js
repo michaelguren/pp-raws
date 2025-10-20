@@ -4,8 +4,9 @@ const cdk = require("aws-cdk-lib");
 // Import core stack
 const { EtlCoreStack } = require("./EtlCoreStack");
 
-// Import bootstrap orchestration stack
+// Import orchestration stacks
 const { EtlBootstrapOrchestrationStack } = require("./orchestrations/bootstrap/EtlBootstrapOrchestrationStack");
+const { DailyFdaOrchestrationStack } = require("./orchestrations/daily/fda/DailyFdaOrchestrationStack");
 
 // Import dataset stacks - Bronze
 const { FdaNsdeStack } = require("./datasets/bronze/fda-nsde/FdaNsdeStack");
@@ -49,6 +50,15 @@ const etlBootstrapOrchestrationStack = new EtlBootstrapOrchestrationStack(app, "
   description: "ETL Bootstrap Orchestration: One-time initialization step function to run all bronze→silver→gold jobs"
 });
 etlBootstrapOrchestrationStack.addDependency(etlCoreStack);
+
+// Deploy daily FDA orchestration (Step Functions, Lambda)
+// Daily pipeline for FDA datasets: fda-nsde, fda-cder → fda-all-ndcs (bronze → silver → gold)
+const dailyFdaOrchestrationStack = new DailyFdaOrchestrationStack(app, "pp-dw-daily-fda-orchestration", {
+  env,
+  etlCoreStack,
+  description: "Daily FDA Orchestration: Automated daily pipeline for FDA drug data (fda-nsde, fda-cder → fda-all-ndcs)"
+});
+dailyFdaOrchestrationStack.addDependency(etlCoreStack);
 
 // Deploy dataset stacks with dependency on core stack
 const fdaNsdeStack = new FdaNsdeStack(app, "pp-dw-etl-fda-nsde", {

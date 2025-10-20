@@ -1,0 +1,21 @@
+{
+  "description": "Daily FDA data pipeline - runs fda-nsde and fda-cder bronze jobs, then silver and gold transformations",
+  "bronze_jobs": [
+    "fda-nsde",
+    "fda-cder"
+  ],
+  "silver_jobs_sequence": [
+    "fda-all-ndcs"
+  ],
+  "gold_jobs_sequence": [
+    "fda-all-ndcs"
+  ],
+  "schedule": {
+    "enabled": false,
+    "expression": "cron(0 6 * * ? *)",
+    "description": "Daily at 6am UTC (1am EST, 10pm PST)"
+  },
+  "crawler_wait_time_seconds": 30,
+  "max_crawler_wait_minutes": 30,
+  "max_glue_job_wait_minutes": 120
+}
