@@ -14,7 +14,7 @@ Usage:
 """
 
 import argparse
-import boto3
+import boto3  # type: ignore[import-not-found]
 import time
 import json
 import sys
