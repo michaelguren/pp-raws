@@ -1,22 +1,10 @@
 {
   "dataset": "rxclass-drug-members",
+  "description": "RxClass drug classifications for all prescribable products from NLM RxNav byRxcui API",
   "layer": "silver",
-  "description": "RxClass drug classifications for all prescribable products from NLM RxNav byRxcui API (drug-first approach)",
   "data_size_category": "large",
-  "source_dependencies": {
-    "silver": ["rxnorm_products"]
-  },
-  "schedule": {
-    "enabled": true,
-    "expression": "cron(0 5 5 * ? *)",
-    "description": "Monthly on the 5th at 5 AM (after RxNORM Products silver layer completes)"
-  },
   "output_table": "rxclass_drug_members",
-  "data_quality": {
-    "critical_null_threshold": 0.01,
-    "required_columns": ["class_id", "rxcui", "name"],
-    "expected_record_count_min": 500000
-  },
+  "source_datasets": ["rxnorm-products"],
   "api_base_url": "https://rxnav.nlm.nih.gov/REST/rxclass/class/byRxcui.json",
   "processing_notes": {
     "method": "Distributed processing using Spark mapPartitions - each worker processes partition of drugs in parallel",

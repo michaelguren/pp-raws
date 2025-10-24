@@ -107,31 +107,28 @@ try:
         "inner"
     ).select(
         # Use package NDC as primary key (11-digit)
-        packages_formatted["formatted_ndc"].alias("fda_ndc_11"),
+        packages_formatted["formatted_ndc"].alias("ndc_11"),
 
         # Product info from CDER products table
-        products_filtered["marketing_category_name"].alias("fda_marketing_category"),
-        products_filtered["product_type_name"].alias("fda_product_type"),
-        products_filtered["proprietary_name"].alias("fda_proprietary_name"),
-        products_filtered["dosage_form_name"].alias("fda_dosage_form"),
-        products_filtered["application_number"].alias("fda_application_number"),
-        products_filtered["dea_schedule"].alias("fda_dea_schedule"),
-        products_filtered["active_numerator_strength"].alias("fda_active_numerator_strength"),
-        products_filtered["active_ingredient_unit"].alias("fda_active_ingredient_unit"),
+        products_filtered["marketing_category_name"].alias("marketing_category"),
+        products_filtered["product_type_name"].alias("product_type"),
+        products_filtered["proprietary_name"].alias("proprietary_name"),
+        products_filtered["dosage_form_name"].alias("dosage_form"),
+        products_filtered["application_number"].alias("application_number"),
+        products_filtered["dea_schedule"].alias("dea_schedule"),
+        products_filtered["active_numerator_strength"].alias("active_numerator_strength"),
+        products_filtered["active_ingredient_unit"].alias("active_ingredient_unit"),
 
         # Derive spl_id from product_id (part after underscore)
-        split(products_filtered["product_id"], "_").getItem(1).alias("fda_spl_id"),
+        split(products_filtered["product_id"], "_").getItem(1).alias("spl_id"),
 
         # Package info from CDER packages table
-        packages_formatted["package_description"].alias("fda_package_description"),
-        packages_formatted["start_marketing_date"].alias("fda_marketing_start_date"),
-        packages_formatted["end_marketing_date"].alias("fda_marketing_end_date"),
-
-        # Computed fields
-        substring(packages_formatted["formatted_ndc"], 1, 5).alias("fda_ndc_5"),
+        packages_formatted["package_description"].alias("package_description"),
+        packages_formatted["start_marketing_date"].alias("marketing_start_date"),
+        packages_formatted["end_marketing_date"].alias("marketing_end_date"),
 
         # Default values
-        lit("").alias("fda_billing_unit"),  # Not in CDER data
+        lit("").alias("billing_unit"),  # Not in CDER data
 
         # Metadata
         packages_formatted["meta_run_id"]
@@ -142,55 +139,65 @@ try:
     # Step 4: INNER JOIN with NSDE (only NDCs present in both datasets)
     print("Performing INNER JOIN with NSDE data...")
 
+    # Create alias for nsde columns to avoid ambiguity
+    nsde_selected = nsde_df.select(
+        col("ndc_11").alias("nsde_ndc_11"),
+        col("proprietary_name").alias("nsde_proprietary_name"),
+        col("dosage_form").alias("nsde_dosage_form"),
+        col("marketing_category").alias("nsde_marketing_category"),
+        col("application number or monograph id").alias("nsde_application_number"),
+        col("product_type").alias("nsde_product_type"),
+        col("marketing_start_date").alias("nsde_marketing_start_date"),
+        col("marketing_end_date").alias("nsde_marketing_end_date"),
+        col("billing_unit").alias("nsde_billing_unit")
+    )
+
     silver_df = cder_joined.join(
-        nsde_df.select("ndc_11", "proprietary_name", "dosage_form", "marketing_category",
-                      "application number or monograph id", "product_type", "marketing_start_date",
-                      "marketing_end_date", "billing_unit"),
-        cder_joined["fda_ndc_11"] == nsde_df["ndc_11"],
+        nsde_selected,
+        cder_joined["ndc_11"] == nsde_selected["nsde_ndc_11"],
         "inner"
     ).select(
         # Primary key
-        col("fda_ndc_11"),
+        cder_joined["ndc_11"],
 
         # Prioritize NSDE data where available, fallback to CDER
-        when(nsde_df["marketing_category"].isNotNull() & (nsde_df["marketing_category"] != ""),
-             nsde_df["marketing_category"]).otherwise(col("fda_marketing_category")).alias("fda_marketing_category"),
+        when(col("nsde_marketing_category").isNotNull() & (col("nsde_marketing_category") != ""),
+             col("nsde_marketing_category")).otherwise(cder_joined["marketing_category"]).alias("marketing_category"),
 
-        when(nsde_df["product_type"].isNotNull() & (nsde_df["product_type"] != ""),
-             nsde_df["product_type"]).otherwise(col("fda_product_type")).alias("fda_product_type"),
+        when(col("nsde_product_type").isNotNull() & (col("nsde_product_type") != ""),
+             col("nsde_product_type")).otherwise(cder_joined["product_type"]).alias("product_type"),
 
-        when(nsde_df["proprietary_name"].isNotNull() & (nsde_df["proprietary_name"] != ""),
-             nsde_df["proprietary_name"]).otherwise(col("fda_proprietary_name")).alias("fda_proprietary_name"),
+        when(col("nsde_proprietary_name").isNotNull() & (col("nsde_proprietary_name") != ""),
+             col("nsde_proprietary_name")).otherwise(cder_joined["proprietary_name"]).alias("proprietary_name"),
 
-        when(nsde_df["dosage_form"].isNotNull() & (nsde_df["dosage_form"] != ""),
-             nsde_df["dosage_form"]).otherwise(col("fda_dosage_form")).alias("fda_dosage_form"),
+        when(col("nsde_dosage_form").isNotNull() & (col("nsde_dosage_form") != ""),
+             col("nsde_dosage_form")).otherwise(cder_joined["dosage_form"]).alias("dosage_form"),
 
-        when(nsde_df["application number or monograph id"].isNotNull() & (nsde_df["application number or monograph id"] != ""),
-             nsde_df["application number or monograph id"]).otherwise(col("fda_application_number")).alias("fda_application_number"),
+        when(col("nsde_application_number").isNotNull() & (col("nsde_application_number") != ""),
+             col("nsde_application_number")).otherwise(cder_joined["application_number"]).alias("application_number"),
 
         # CDER-only fields
-        col("fda_dea_schedule"),
-        col("fda_package_description"),
-        col("fda_active_numerator_strength"),
-        col("fda_active_ingredient_unit"),
-        col("fda_spl_id"),
-        col("fda_ndc_5"),
+        cder_joined["dea_schedule"],
+        cder_joined["package_description"],
+        cder_joined["active_numerator_strength"],
+        cder_joined["active_ingredient_unit"],
+        cder_joined["spl_id"],
 
         # NSDE-prioritized dates and billing
-        when(nsde_df["marketing_start_date"].isNotNull(),
-             nsde_df["marketing_start_date"]).otherwise(col("fda_marketing_start_date")).alias("fda_marketing_start_date"),
+        when(col("nsde_marketing_start_date").isNotNull(),
+             col("nsde_marketing_start_date")).otherwise(cder_joined["marketing_start_date"]).alias("marketing_start_date"),
 
-        when(nsde_df["marketing_end_date"].isNotNull(),
-             nsde_df["marketing_end_date"]).otherwise(col("fda_marketing_end_date")).alias("fda_marketing_end_date"),
+        when(col("nsde_marketing_end_date").isNotNull(),
+             col("nsde_marketing_end_date")).otherwise(cder_joined["marketing_end_date"]).alias("marketing_end_date"),
 
-        when(nsde_df["billing_unit"].isNotNull() & (nsde_df["billing_unit"] != ""),
-             nsde_df["billing_unit"]).otherwise(col("fda_billing_unit")).alias("fda_billing_unit"),
+        when(col("nsde_billing_unit").isNotNull() & (col("nsde_billing_unit") != ""),
+             col("nsde_billing_unit")).otherwise(cder_joined["billing_unit"]).alias("billing_unit"),
 
         # Flag indicating NSDE presence (always TRUE since this is INNER JOIN)
-        lit(True).alias("fda_nsde_flag"),
+        lit(True).alias("nsde_flag"),
 
         # Metadata
-        col("meta_run_id")
+        cder_joined["meta_run_id"]
     )
 
     print(f"Final SILVER records (INNER JOIN): {silver_df.count()}")
@@ -198,23 +205,13 @@ try:
 
     # Step 5: Write to SILVER layer
     print(f"Writing SILVER data to: {silver_path}")
+    print("Mode: overwrite (kill-and-fill)")
 
-    # Convert to DynamicFrame for writing
-    from awsglue.dynamicframe import DynamicFrame  # type: ignore[import-not-found]
-    silver_dynamic_frame = DynamicFrame.fromDF(
-        silver_df,
-        glueContext,
-        dataset
-    )
-
-    # Write to S3 (kill-and-fill)
-    glueContext.write_dynamic_frame.from_options(
-        frame=silver_dynamic_frame,
-        connection_type="s3",
-        connection_options={"path": silver_path},
-        format="parquet",
-        transformation_ctx=f"write_{dataset}"
-    )
+    # Write using DataFrame for proper overwrite behavior
+    # This ensures old files are deleted before writing new ones
+    silver_df.write \
+        .mode("overwrite") \
+        .parquet(silver_path)
 
     print("SILVER data written successfully")
     print(f"Note: Run crawler manually when needed: {crawler_name}")

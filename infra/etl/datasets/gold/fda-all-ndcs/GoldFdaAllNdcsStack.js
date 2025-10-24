@@ -4,9 +4,16 @@ const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
 const path = require("path");
 
 /**
- * FDA All NDCs Gold Layer Stack
- * Applies temporal versioning (SCD Type 2) to silver FDA data
+ * FDA All NDCs Gold Layer Stack - Delta Lake Edition
+ * Applies temporal versioning (SCD Type 2) to silver FDA data using Delta Lake
  * Partitions by status (current/historical) for efficient queries
+ *
+ * Delta Lake Benefits:
+ * - 90%+ reduction in S3 writes (MERGE vs full overwrite)
+ * - ACID transactions
+ * - Time travel capabilities
+ * - Automatic schema evolution
+ * - Optimized read performance with ZORDER
  */
 class GoldFdaAllNdcsStack extends cdk.Stack {
   constructor(scope, id, props) {
@@ -49,7 +56,7 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
       retainOnDelete: false
     });
 
-    // Deploy temporal versioning library to S3
+    // Deploy Delta Lake temporal versioning library to S3
     new s3deploy.BucketDeployment(this, 'DeployTemporalLib', {
       sources: [s3deploy.Source.asset(path.join(__dirname, '../../../shared/runtime/temporal'))],
       destinationBucket: dataWarehouseBucket,
@@ -58,10 +65,11 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
       prune: false  // Don't delete other files in this prefix
     });
 
-    // Create GOLD Glue Job
+    // Create GOLD Glue Job with Delta Lake Support
+    // Note: Glue 5.0 includes Delta Lake 3.0.0 built-in - no extra JARs needed
     const goldJob = new glue.CfnJob(this, 'GoldJob', {
       name: `${etlConfig.etl_resource_prefix}-gold-${dataset}`,
-      description: `GOLD layer job for ${dataset} - ${datasetConfig.description}`,
+      description: `GOLD layer job for ${dataset} - ${datasetConfig.description} (Delta Lake)`,
       role: glueRole.roleArn,
 
       command: {
@@ -70,7 +78,7 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
         pythonVersion: etlConfig.glue_defaults.python_version
       },
 
-      glueVersion: etlConfig.glue_defaults.version,
+      glueVersion: etlConfig.glue_defaults.version,  // 5.0 has Delta Lake built-in
 
       workerType: workerConfig.worker_type,
       numberOfWorkers: workerConfig.number_of_workers,
@@ -87,8 +95,11 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
         '--enable-spark-ui': 'true',
         '--spark-event-logs-path': `s3://${bucketName}/glue-spark-logs/`,
 
-        // Extra Python files - temporal versioning library
-        '--extra-py-files': `${temporalLibPath}temporal_versioning.py`,
+        // Delta Lake configuration
+        '--conf': 'spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog',
+
+        // Extra Python files - Delta Lake temporal versioning library
+        '--extra-py-files': `${temporalLibPath}temporal_versioning_delta.py`,
 
         // Dataset and database configuration
         '--dataset': dataset,
@@ -112,10 +123,10 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
       }
     });
 
-    // Create Crawler for GOLD layer
+    // Create Crawler for GOLD layer Delta table
     const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
       name: `${etlConfig.etl_resource_prefix}-gold-${dataset}-crawler`,
-      description: `Crawler for GOLD ${dataset} parquet files (status-partitioned)`,
+      description: `Crawler for GOLD ${dataset} Delta table (status-partitioned)`,
       role: glueRole.roleArn,
       databaseName: goldDatabase,
 
@@ -152,17 +163,22 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     // CloudFormation outputs
     new cdk.CfnOutput(this, 'GoldJobName', {
       value: goldJob.name,
-      description: 'Gold layer Glue job name'
+      description: 'Gold layer Glue job name (Delta Lake)'
     });
 
     new cdk.CfnOutput(this, 'GoldCrawlerName', {
       value: goldCrawler.name,
-      description: 'Gold layer crawler name'
+      description: 'Gold layer crawler name (Delta Lake)'
     });
 
     new cdk.CfnOutput(this, 'GoldPath', {
       value: goldBasePath,
-      description: 'S3 path for gold layer data'
+      description: 'S3 path for gold layer Delta table'
+    });
+
+    new cdk.CfnOutput(this, 'DeltaFormat', {
+      value: 'Delta Lake 3.0.0 (Glue 5.0)',
+      description: 'Delta Lake format and version'
     });
   }
 }

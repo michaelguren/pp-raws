@@ -1,17 +1,9 @@
 {
   "dataset": "rxnorm-products",
-  "description": "RxNORM Products GOLD layer - Temporally versioned RxNORM drug product data with status partitioning",
+  "description": "Temporally versioned RxNORM drug product data with status partitioning",
   "layer": "gold",
   "data_size_category": "medium",
   "source_datasets": ["rxnorm-products"],
-  "schedule": {
-    "enabled": false,
-    "expression": "cron(0 5 5 * ? *)",
-    "description": "Monthly on the 5th at 5am (after silver layer completes)"
-  },
-  "dependencies": {
-    "silver_tables": ["silver_rxnorm_products"]
-  },
   "temporal_config": {
     "business_key": "rxcui",
     "business_columns": [
@@ -30,14 +22,5 @@
       "bpck_rxcui",
       "multi_ingredient"
     ]
-  },
-  "partitioning": {
-    "strategy": "status",
-    "values": ["current", "historical"]
-  },
-  "data_quality": {
-    "critical_null_threshold": 0.05,
-    "required_columns": ["rxcui", "version_id", "active_from", "active_to", "status"],
-    "expected_record_count_min": 1000
   }
 }

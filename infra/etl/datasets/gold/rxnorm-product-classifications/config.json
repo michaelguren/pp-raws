@@ -1,17 +1,9 @@
 {
   "dataset": "rxnorm-product-classifications",
-  "description": "RxNORM product classifications GOLD layer - Temporally versioned with status partitioning",
+  "description": "Temporally versioned RxNORM product classifications with status partitioning",
   "layer": "gold",
   "data_size_category": "large",
   "source_datasets": ["rxclass-drug-members"],
-  "schedule": {
-    "enabled": false,
-    "expression": "cron(0 6 5 * ? *)",
-    "description": "Monthly on the 5th at 6am (after bronze rxclass-drug-members completes)"
-  },
-  "dependencies": {
-    "bronze_tables": ["rxclass_drug_members"]
-  },
   "temporal_config": {
     "business_key": ["product_rxcui", "rxclassminconceptitem_classid", "rxclassminconceptitem_classtype"],
     "business_columns": [
@@ -24,20 +16,5 @@
       "relasource"
     ],
     "notes": "Composite key tracks when specific drug-class-type relationships change. Supports bidirectional queries (drug→classes and class→drugs)."
-  },
-  "partitioning": {
-    "strategy": "status",
-    "values": ["current", "historical"]
-  },
-  "data_quality": {
-    "critical_null_threshold": 0.01,
-    "required_columns": ["rxcui", "class_id", "class_type", "version_id", "active_from", "active_to", "status"],
-    "expected_record_count_min": 500000
-  },
-  "search_patterns": {
-    "drug_to_classes": "Query by rxcui to get all classes for a drug",
-    "class_to_drugs": "Query by class_id and class_type to get all drugs in a class",
-    "class_name_search": "Full-text search on class_name field (tokenized in DynamoDB)",
-    "filtered_search": "Search class_name within specific class_type (e.g., ATC, VA, CHEM)"
   }
 }

@@ -75,7 +75,7 @@ const fdaCderStack = new FdaCderStack(app, "pp-dw-etl-fda-cder", {
 });
 fdaCderStack.addDependency(etlCoreStack);
 
-const fdaAllNdcsStack = new FdaAllNdcsStack(app, "pp-dw-etl-fda-all-ndcs", {
+const fdaAllNdcsStack = new FdaAllNdcsStack(app, "pp-dw-etl-silver-fda-all-ndcs", {
   env,
   etlCoreStack,
   description: "FDA All NDCs Silver Layer - Combined NSDE and CDER data"

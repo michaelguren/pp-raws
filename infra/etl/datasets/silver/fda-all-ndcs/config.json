@@ -1,25 +1,8 @@
 {
   "dataset": "fda-all-ndcs",
-  "description": "FDA All NDCs SILVER layer - Combined NSDE and CDER data with INNER JOIN",
-  "data_size_category": "medium",
+  "description": "Combined NSDE and CDER data with INNER JOIN",
   "layer": "silver",
+  "data_size_category": "medium",
   "output_table": "fda_all_ndcs",
-  "source_datasets": ["fda-nsde", "fda-cder"],
-  "schedule": {
-    "enabled": false,
-    "expression": "cron(0 8 * * ? *)",
-    "description": "Run after bronze layers complete"
-  },
-  "dependencies": {
-    "bronze_tables": [
-      "bronze_fda_nsde",
-      "bronze_fda_cder_products",
-      "bronze_fda_cder_packages"
-    ]
-  },
-  "data_quality": {
-    "critical_null_threshold": 0.05,
-    "required_columns": ["fda_ndc_11"],
-    "expected_record_count_min": 10000
-  }
+  "source_datasets": ["fda-nsde", "fda-cder"]
 }

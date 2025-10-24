@@ -3,28 +3,6 @@
   "description": "RxNORM to NDC mappings extracted from RXNSAT attributes",
   "layer": "silver",
   "data_size_category": "medium",
-  "source_datasets": ["rxnorm"],
-  "schedule": {
-    "enabled": false,
-    "expression": "cron(0 3 5 * ? *)",
-    "description": "Monthly on the 5th at 3am (after bronze rxnorm completes)"
-  },
-  "dependencies": {
-    "bronze_tables": ["rxnsat", "rxnconso"]
-  },
-  "data_quality": {
-    "critical_null_threshold": 0.01,
-    "required_columns": ["rxcui", "ndc", "tty", "str"],
-    "expected_record_count_min": 100000,
-    "validation_checks": [
-      "ndc_length_12_digits",
-      "ndc_all_numeric",
-      "rxcui_exists_in_rxnconso"
-    ]
-  },
-  "output_format": {
-    "file_format": "parquet",
-    "compression": "zstd",
-    "partitioning": null
-  }
+  "output_table": "rxnorm_ndc_mappings",
+  "source_datasets": ["rxnorm"]
 }

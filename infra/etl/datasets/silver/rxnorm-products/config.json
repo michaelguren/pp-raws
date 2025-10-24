@@ -1,15 +1,8 @@
 {
   "dataset": "rxnorm-products",
-  "layer": "silver",
   "description": "Prescribable drug products enriched from RxNORM bronze tables",
+  "layer": "silver",
   "data_size_category": "medium",
-  "source_dependencies": {
-    "bronze": ["rxnconso", "rxnrel", "rxnsat"]
-  },
-  "schedule": {
-    "enabled": false,
-    "expression": "cron(0 4 5 * ? *)",
-    "description": "Monthly on the 5th at 4am (after bronze RxNORM refresh)"
-  },
-  "output_table": "rxnorm_products"
+  "output_table": "rxnorm_products",
+  "source_datasets": ["rxnorm"]
 }
