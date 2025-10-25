@@ -1,6 +1,8 @@
 const cdk = require("aws-cdk-lib");
 const glue = require("aws-cdk-lib/aws-glue");
 const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
+const cr = require("aws-cdk-lib/custom-resources");
+const iam = require("aws-cdk-lib/aws-iam");
 const path = require("path");
 
 /**
@@ -136,58 +138,88 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     goldJob.node.addDependency(temporalDeployment);
     goldJob.node.addDependency(dataWarehouseBucket);
 
-    // Register Delta Lake table in Glue Data Catalog using pure CDK
-    // This is a first-class CloudFormation resource - no Lambda/custom resource needed
-    // The table registration is fully declarative and promotes cleanly across environments
-    const goldTable = new glue.CfnTable(this, 'GoldTable', {
-      databaseName: goldDatabase,
-      catalogId: this.account,  // Resolves at deploy-time for multi-account compatibility
-      tableInput: {
-        name: goldTableName,
-        description: `Gold layer Delta table for ${dataset} with SCD Type 2 temporal versioning`,
-
-        // Note: tableType is inferred by Glue when table_type='DELTA', but we keep it explicit for clarity
-        tableType: 'EXTERNAL_TABLE',
-
-        // CRITICAL: These parameters enable Athena Engine v3 to recognize this as a native Delta table
-        // Without these, Athena will treat it as regular Parquet and fail to read Delta transaction logs
+    // Register Delta Lake table in Glue Data Catalog using AwsCustomResource
+    // We use AwsCustomResource instead of CfnTable because CloudFormation always adds
+    // an empty Columns: [] array even with addPropertyDeletionOverride, which breaks
+    // Athena's ability to infer schema from the Delta _delta_log.
+    //
+    // This pattern uses the AWS SDK directly via Lambda to create the table with
+    // NO Columns property at all, allowing Athena v3 to read schema from Delta log.
+    const goldTable = new cr.AwsCustomResource(this, 'GoldTable', {
+      onCreate: {
+        service: 'Glue',
+        action: 'createTable',
         parameters: {
-          'classification': 'delta',      // Identifies table format as Delta Lake
-          'table_type': 'DELTA',           // Enables Athena v3 native Delta reads
-          'EXTERNAL': 'TRUE',              // Marks table as externally managed (data lives in S3)
-          'external': 'TRUE'               // Duplicate for AWS normalization across regions
-        },
+          DatabaseName: goldDatabase,
+          TableInput: {
+            Name: goldTableName,
+            Description: `Gold layer Delta table for ${dataset} with SCD Type 2 temporal versioning`,
+            TableType: 'EXTERNAL_TABLE',
 
-        // Storage descriptor with correct Parquet I/O formats for Delta Lake
-        // Delta manages schema automatically via _delta_log transaction log, so no columns array needed
-        //
-        // Schema Evolution Note: If schema updates become required, Glue 5.0 + Delta supports
-        // automatic catalog updates via Spark session config in the Glue job:
-        //   spark.databricks.delta.schema.autoMerge.enabled = true
-        // This allows schema changes without manual IaC updates.
-        storageDescriptor: {
-          location: goldBasePath,
-          inputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
-          outputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
-          serdeInfo: {
-            serializationLibrary: 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+            // CRITICAL: These parameters enable Athena Engine v3 native Delta reads
+            Parameters: {
+              'classification': 'delta',
+              'table_type': 'DELTA',
+              'EXTERNAL': 'TRUE',
+              'external': 'TRUE'
+            },
+
+            // Storage descriptor WITHOUT Columns property
+            // Delta Lake manages schema via _delta_log transaction log
+            StorageDescriptor: {
+              Location: goldBasePath,
+              InputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+              OutputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+              SerdeInfo: {
+                SerializationLibrary: 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+              }
+              // Columns property intentionally omitted - Athena infers from _delta_log
+            }
           }
-          // columns array omitted - Delta Lake manages schema via transaction log
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(`${goldDatabase}-${goldTableName}`)
+      },
+      onUpdate: {
+        service: 'Glue',
+        action: 'updateTable',
+        parameters: {
+          DatabaseName: goldDatabase,
+          TableInput: {
+            Name: goldTableName,
+            Description: `Gold layer Delta table for ${dataset} with SCD Type 2 temporal versioning`,
+            TableType: 'EXTERNAL_TABLE',
+            Parameters: {
+              'classification': 'delta',
+              'table_type': 'DELTA',
+              'EXTERNAL': 'TRUE',
+              'external': 'TRUE'
+            },
+            StorageDescriptor: {
+              Location: goldBasePath,
+              InputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+              OutputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+              SerdeInfo: {
+                SerializationLibrary: 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+              }
+            }
+          }
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(`${goldDatabase}-${goldTableName}`)
+      },
+      onDelete: {
+        service: 'Glue',
+        action: 'deleteTable',
+        parameters: {
+          DatabaseName: goldDatabase,
+          Name: goldTableName
         }
-      }
+      },
+      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
+        resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE
+      })
     });
 
-    // CRITICAL: Remove the Columns property entirely from CloudFormation template
-    // CDK/CloudFormation defaults columns to [] if not specified, which breaks Athena Delta reads
-    // Athena v3 needs columns completely omitted so it can infer schema from _delta_log
-    //
-    // Post-deployment validation (run in Athena):
-    //   SHOW CREATE TABLE pp_dw_gold.fda_all_ndcs;
-    //   DESCRIBE pp_dw_gold.fda_all_ndcs;
-    //   SELECT COUNT(*) FROM pp_dw_gold.fda_all_ndcs;
-    goldTable.addPropertyDeletionOverride('TableInput.StorageDescriptor.Columns');
-
-    // Ensure table is created after job to prevent race conditions
+    // Ensure table is created after job and bucket to prevent race conditions
     goldTable.node.addDependency(goldJob);
     goldTable.node.addDependency(dataWarehouseBucket);
 
@@ -218,8 +250,8 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'DeltaFormat', {
-      value: 'Delta Lake 3.0.0 (Glue 5.0) - Declarative IaC',
-      description: 'Delta Lake format and version with pure CDK registration'
+      value: 'Delta Lake 3.0.0 (Glue 5.0) - AwsCustomResource (no Columns property)',
+      description: 'Delta Lake format with AwsCustomResource for proper Athena schema inference'
     });
   }
 }
