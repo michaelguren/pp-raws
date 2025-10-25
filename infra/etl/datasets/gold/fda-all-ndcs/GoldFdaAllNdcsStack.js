@@ -41,15 +41,23 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     // Silver source table name (use output_table if specified, otherwise convert dataset name)
     const silverTable = fdaAllNdcsConfig.output_table || fdaAllNdcsConfig.dataset.replace(/-/g, '_');
 
+    // Gold table name (hyphens → underscores for Glue)
+    const goldTableName = dataset.replace(/-/g, '_');
+
     // Build paths using convention - GOLD layer paths
     const goldBasePath = `s3://${bucketName}/gold/${dataset}/`;
     const goldScriptPath = `s3://${bucketName}/etl/${dataset}/glue/gold_job.py`;
+
+    // Defensive validation for S3 path
+    if (!goldBasePath.startsWith('s3://')) {
+      throw new Error(`goldBasePath must be an S3 URI, got: ${goldBasePath}`);
+    }
 
     // Temporal versioning library path
     const temporalLibPath = `s3://${bucketName}/etl/shared/runtime/temporal/`;
 
     // Deploy Glue script to S3
-    new s3deploy.BucketDeployment(this, 'DeployGlueScript', {
+    const scriptDeployment = new s3deploy.BucketDeployment(this, 'DeployGlueScript', {
       sources: [s3deploy.Source.asset(path.join(__dirname, 'glue'))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: `etl/${dataset}/glue/`,
@@ -57,7 +65,7 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     });
 
     // Deploy Delta Lake temporal versioning library to S3
-    new s3deploy.BucketDeployment(this, 'DeployTemporalLib', {
+    const temporalDeployment = new s3deploy.BucketDeployment(this, 'DeployTemporalLib', {
       sources: [s3deploy.Source.asset(path.join(__dirname, '../../../shared/runtime/temporal'))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: 'etl/shared/runtime/temporal/',
@@ -96,7 +104,8 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
         '--spark-event-logs-path': `s3://${bucketName}/glue-spark-logs/`,
 
         // Delta Lake configuration
-        '--conf': 'spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog',
+        // Note: --datalake-formats=delta auto-configures Spark extensions and Delta catalog in Glue 5.0
+        '--datalake-formats': 'delta',
 
         // Extra Python files - Delta Lake temporal versioning library
         '--extra-py-files': `${temporalLibPath}temporal_versioning_delta.py`,
@@ -116,39 +125,71 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
 
         // Compression and performance settings
         '--compression_codec': 'ZSTD',
-        '--crawler_name': `${etlConfig.etl_resource_prefix}-gold-${dataset}-crawler`,
 
         // Additional job-specific arguments
         '--enable-auto-scaling': 'true'
       }
     });
 
-    // Create Crawler for GOLD layer Delta table
-    const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
-      name: `${etlConfig.etl_resource_prefix}-gold-${dataset}-crawler`,
-      description: `Crawler for GOLD ${dataset} Delta table (status-partitioned)`,
-      role: glueRole.roleArn,
+    // Ensure scripts are deployed before job creation (fixes race condition)
+    goldJob.node.addDependency(scriptDeployment);
+    goldJob.node.addDependency(temporalDeployment);
+    goldJob.node.addDependency(dataWarehouseBucket);
+
+    // Register Delta Lake table in Glue Data Catalog using pure CDK
+    // This is a first-class CloudFormation resource - no Lambda/custom resource needed
+    // The table registration is fully declarative and promotes cleanly across environments
+    const goldTable = new glue.CfnTable(this, 'GoldTable', {
       databaseName: goldDatabase,
+      catalogId: this.account,  // Resolves at deploy-time for multi-account compatibility
+      tableInput: {
+        name: goldTableName,
+        description: `Gold layer Delta table for ${dataset} with SCD Type 2 temporal versioning`,
 
-      targets: {
-        s3Targets: [{
-          path: goldBasePath
-        }]
-      },
+        // Note: tableType is inferred by Glue when table_type='DELTA', but we keep it explicit for clarity
+        tableType: 'EXTERNAL_TABLE',
 
-      configuration: JSON.stringify({
-        Version: 1.0,
-        CrawlerOutput: {
-          Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
-          Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
+        // CRITICAL: These parameters enable Athena Engine v3 to recognize this as a native Delta table
+        // Without these, Athena will treat it as regular Parquet and fail to read Delta transaction logs
+        parameters: {
+          'classification': 'delta',      // Identifies table format as Delta Lake
+          'table_type': 'DELTA',           // Enables Athena v3 native Delta reads
+          'EXTERNAL': 'TRUE',              // Marks table as externally managed (data lives in S3)
+          'external': 'TRUE'               // Duplicate for AWS normalization across regions
+        },
+
+        // Storage descriptor with correct Parquet I/O formats for Delta Lake
+        // Delta manages schema automatically via _delta_log transaction log, so no columns array needed
+        //
+        // Schema Evolution Note: If schema updates become required, Glue 5.0 + Delta supports
+        // automatic catalog updates via Spark session config in the Glue job:
+        //   spark.databricks.delta.schema.autoMerge.enabled = true
+        // This allows schema changes without manual IaC updates.
+        storageDescriptor: {
+          location: goldBasePath,
+          inputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+          outputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+          serdeInfo: {
+            serializationLibrary: 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+          }
+          // columns array omitted - Delta Lake manages schema via transaction log
         }
-      }),
-
-      // Crawler schedule - runs on demand after job completion
-      schedule: {
-        scheduleExpression: '' // Empty = on-demand only
       }
     });
+
+    // CRITICAL: Remove the Columns property entirely from CloudFormation template
+    // CDK/CloudFormation defaults columns to [] if not specified, which breaks Athena Delta reads
+    // Athena v3 needs columns completely omitted so it can infer schema from _delta_log
+    //
+    // Post-deployment validation (run in Athena):
+    //   SHOW CREATE TABLE pp_dw_gold.fda_all_ndcs;
+    //   DESCRIBE pp_dw_gold.fda_all_ndcs;
+    //   SELECT COUNT(*) FROM pp_dw_gold.fda_all_ndcs;
+    goldTable.addPropertyDeletionOverride('TableInput.StorageDescriptor.Columns');
+
+    // Ensure table is created after job to prevent race conditions
+    goldTable.node.addDependency(goldJob);
+    goldTable.node.addDependency(dataWarehouseBucket);
 
     // Create EventBridge rule for scheduling if enabled
     if (datasetConfig.schedule?.enabled) {
@@ -157,7 +198,7 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
 
     // Export useful properties
     this.goldJob = goldJob;
-    this.goldCrawler = goldCrawler;
+    this.goldTable = goldTable;
     this.goldPath = goldBasePath;
 
     // CloudFormation outputs
@@ -166,9 +207,9 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
       description: 'Gold layer Glue job name (Delta Lake)'
     });
 
-    new cdk.CfnOutput(this, 'GoldCrawlerName', {
-      value: goldCrawler.name,
-      description: 'Gold layer crawler name (Delta Lake)'
+    new cdk.CfnOutput(this, 'GoldTableName', {
+      value: goldTableName,
+      description: 'Gold layer Delta table name'
     });
 
     new cdk.CfnOutput(this, 'GoldPath', {
@@ -177,8 +218,8 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'DeltaFormat', {
-      value: 'Delta Lake 3.0.0 (Glue 5.0)',
-      description: 'Delta Lake format and version'
+      value: 'Delta Lake 3.0.0 (Glue 5.0) - Declarative IaC',
+      description: 'Delta Lake format and version with pure CDK registration'
     });
   }
 }

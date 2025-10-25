@@ -288,6 +288,150 @@ silver_df = glueContext.create_dynamic_frame.from_catalog(
 
 ---
 
+## Delta Lake Configuration for Gold Layer (AWS Glue 5.0)
+
+**CRITICAL: Proper Delta Lake configuration requires specific setup in both CDK and Python.**
+
+**📋 See `DELTA_TABLE_REGISTRATION.md` for full architectural decision record.**
+
+### CDK Stack Configuration (GoldStack.js)
+
+#### 1. Glue Job Configuration
+
+```javascript
+defaultArguments: {
+  // Enable Delta Lake support - loads libraries and modules
+  '--datalake-formats': 'delta',
+
+  // Deploy temporal versioning library
+  '--extra-py-files': `${temporalLibPath}temporal_versioning_delta.py`,
+
+  // DO NOT use --conf here! It causes "Invalid input to --conf" errors in Glue
+  // Spark configs must be set in Python code BEFORE SparkContext creation
+}
+```
+
+#### 2. Delta Table Registration (Pure IaC Pattern)
+
+**🚫 DO NOT USE GLUE CRAWLERS for Delta Lake tables**
+
+Crawlers incorrectly register Delta tables as `classification=parquet` instead of native Delta tables.
+
+**✅ USE `glue.CfnTable` - Pure CDK declarative resource (Production Pattern):**
+
+```javascript
+const cdk = require("aws-cdk-lib");
+const glue = require("aws-cdk-lib/aws-glue");
+
+// Gold table name (hyphens → underscores for Glue)
+const goldTableName = dataset.replace(/-/g, '_');
+const goldBasePath = `s3://${bucketName}/gold/${dataset}/`;
+
+// Defensive validation for S3 path
+if (!goldBasePath.startsWith('s3://')) {
+  throw new Error(`goldBasePath must be an S3 URI, got: ${goldBasePath}`);
+}
+
+// Register Delta Lake table using first-class CloudFormation resource
+const goldTable = new glue.CfnTable(this, 'GoldTable', {
+  databaseName: goldDatabase,
+  catalogId: this.account,  // Resolves at deploy-time for multi-account compatibility
+  tableInput: {
+    name: goldTableName,
+    description: `Gold layer Delta table for ${dataset} with SCD Type 2 temporal versioning`,
+    tableType: 'EXTERNAL_TABLE',
+
+    // CRITICAL: These parameters enable Athena Engine v3 native Delta reads
+    parameters: {
+      'classification': 'delta',
+      'table_type': 'DELTA',
+      'EXTERNAL': 'TRUE',
+      'external': 'TRUE'  // Duplicate for AWS normalization across regions
+    },
+
+    // Storage descriptor with correct Parquet I/O formats for Delta
+    // Schema Evolution: spark.databricks.delta.schema.autoMerge.enabled = true
+    storageDescriptor: {
+      location: goldBasePath,
+      inputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+      outputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+      serdeInfo: {
+        serializationLibrary: 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+      }
+      // columns array omitted - Delta manages schema via transaction log
+    }
+  }
+});
+
+// Explicit dependencies to prevent race conditions
+goldTable.node.addDependency(goldJob);
+goldTable.node.addDependency(dataWarehouseBucket);
+```
+
+**Production Hardening:**
+- ✅ `glue.CfnTable` - Pure CloudFormation (NOT Lambda-backed)
+- ✅ `this.account` - Deploy-time resolution (multi-account safe)
+- ✅ Dual `EXTERNAL`/`external` - AWS region normalization
+- ✅ S3 URI validation - Catches config errors at synth time
+- ✅ Explicit dependencies - Prevents race conditions
+- ✅ No columns array - Delta manages schema automatically
+- ✅ Fully declarative - No procedural logic, no IAM complexity
+
+**See `DELTA_TABLE_REGISTRATION.md` for complete architectural decision record.**
+
+### Python Job Configuration (gold_job.py)
+
+**✅ CORRECT: Configure Spark BEFORE creating SparkContext**
+
+```python
+from pyspark import SparkConf
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+
+# Set Delta Lake configs BEFORE SparkContext creation
+conf = SparkConf()
+conf.set("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+conf.set("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+
+# Initialize with configured SparkConf
+sc = SparkContext(conf=conf)
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+```
+
+**❌ WRONG: Do NOT set configs after SparkContext creation**
+
+```python
+sc = SparkContext()  # SparkSession created here
+spark.conf.set(...)  # TOO LATE! Causes "Cannot modify static config" error
+```
+
+### Common Delta Lake Errors
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `ModuleNotFoundError: No module named 'delta'` | Missing `--datalake-formats` | Add `'--datalake-formats': 'delta'` in CDK |
+| `Cannot modify the value of a static config` | Setting config after SparkContext | Use `SparkConf` before `SparkContext()` |
+| `Invalid input to --conf` | Using `--conf` in CDK arguments | Remove `--conf`, use Python `SparkConf` instead |
+| `Delta operation requires SparkSession to be configured` | Missing Spark extensions/catalog | Set via `SparkConf` in Python before context creation |
+| Athena returns 0 rows despite data in S3 | Crawler registered table as `classification=parquet` | Use AwsCustomResource pattern (see above) |
+| `TABLE_OR_VIEW_NOT_FOUND` | Table not registered in Glue catalog | Deploy CDK stack with AwsCustomResource |
+
+### Stack Dependencies
+
+Always ensure scripts are deployed before job creation:
+
+```javascript
+const scriptDeployment = new s3deploy.BucketDeployment(this, 'DeployGlueScript', {...});
+const temporalDeployment = new s3deploy.BucketDeployment(this, 'DeployTemporalLib', {...});
+
+// Prevent race conditions
+goldJob.node.addDependency(scriptDeployment);
+goldJob.node.addDependency(temporalDeployment);
+```
+
+---
+
 ## Data Flow
 
 **Bronze Layer** (automated via factory + shared `bronze_http_job.py`):

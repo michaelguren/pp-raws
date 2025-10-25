@@ -7,7 +7,7 @@
     "bootstrap": "cdk bootstrap",
     "etl:deploy": "cd infra/etl && cdk deploy --all",
     "etl:deploy:core": "cd infra/etl && cdk deploy pp-dw-etl-core",
-    "etl:deploy:gold-fda": "cd infra/etl && cdk deploy pp-dw-etl-gold-fda-all-ndc",
+    "etl:deploy:gold-fda": "cd infra/etl && cdk deploy pp-dw-etl-gold-fda-all-ndcs",
     "etl:deploy:gold-rxnorm": "cd infra/etl && cdk deploy pp-dw-etl-gold-rxnorm-products",
     "etl:deploy:gold-all": "cd infra/etl && cdk deploy pp-dw-etl-gold-fda-all-ndc pp-dw-etl-gold-rxnorm-products",
     "etl:diff": "cd infra/etl && cdk diff --all",

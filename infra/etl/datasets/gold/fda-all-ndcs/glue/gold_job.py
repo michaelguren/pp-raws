@@ -18,6 +18,7 @@ import sys
 import boto3  # type: ignore[import-not-found]
 from datetime import datetime
 from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
+from pyspark import SparkConf  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
 from awsglue.job import Job  # type: ignore[import-not-found]
@@ -27,23 +28,23 @@ from pyspark.sql import functions as F  # type: ignore[import-not-found]
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'dataset',
     'silver_database', 'gold_database', 'gold_base_path',
-    'compression_codec', 'crawler_name',
+    'compression_codec',
     'silver_table', 'temporal_lib_path'
 ])
 
-# Initialize Glue
-sc = SparkContext()
+# Configure Spark for Delta Lake BEFORE creating SparkContext
+# Setting configs here (before SparkContext creation) is the correct approach
+# Setting them after would cause "Cannot modify static config" error
+conf = SparkConf()
+conf.set("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+conf.set("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+
+# Initialize Glue with Delta-configured SparkConf
+sc = SparkContext(conf=conf)
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
 job = Job(glueContext)
 job.init(args['JOB_NAME'], args)
-
-# Configure Spark for Delta Lake
-spark.conf.set("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-spark.conf.set("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-spark.conf.set("spark.databricks.delta.retentionDurationCheck.enabled", "false")  # Allow vacuum < 7 days
-spark.conf.set("spark.databricks.delta.properties.defaults.autoOptimize.optimizeWrite", "true")
-spark.conf.set("spark.databricks.delta.properties.defaults.autoOptimize.autoCompact", "true")
 
 # Add temporal versioning library to Python path
 sys.path.append(args['temporal_lib_path'])
@@ -145,10 +146,8 @@ try:
     print(f"UNCHANGED records: {stats['unchanged']} (skipped)")
     print(f"Total writes: {stats['total_written']}")
 
-    print(f"\nCrawler: {args['crawler_name']}")
-    print("Command: aws glue start-crawler --name " + args['crawler_name'])
-
     print("\n=== GOLD ETL completed successfully ===")
+    print("Note: Delta table registered via CDK (no crawler needed)")
 
 except Exception as e:
     print(f"\n=== GOLD ETL FAILED ===")
