@@ -84,10 +84,37 @@ Glue Jobs perform the work; Step Functions orchestrate flow.
 S3 and Athena form the lakehouse — the simplest expression of truth.  
 No warehouses, no clusters, no waiting rooms for your data.
 
-RAWS also embraces **adaptive complexity**.  
-Layers exist to clarify intent, not to create ceremony.  
-When a dataset requires no transformation beyond ingestion, Bronze and Silver may safely collapse.  
+RAWS also embraces **adaptive complexity**.
+Layers exist to clarify intent, not to create ceremony.
+When a dataset requires no transformation beyond ingestion, Bronze and Silver may safely collapse.
 RAWS evolves by need, not by ritual.
+
+### Reference Implementation: Bronze Pattern A
+
+**Canonical Example:** `infra/etl/datasets/bronze/fda-nsde/`
+
+This is RAWS' **blessed pattern** for HTTP/ZIP data sources (FDA, standard CSV APIs, etc.).
+
+**What makes it canonical:**
+- Uses `EtlStackFactory` - shared infrastructure code
+- Uses `bronze_http_job.py` - shared transformation logic
+- Zero Glue API calls in jobs (pure data-plane)
+- Catalog managed by orchestration (Step Functions → crawlers)
+- Complete separation: data transformation vs infrastructure coordination
+
+**When to copy this pattern:**
+- HTTP/ZIP sources with CSV/TSV files
+- Standard column headers and delimiters
+- No authentication or custom protocols
+
+**When to use Pattern B (custom jobs):**
+- Non-CSV formats (RRF, JSON, binary)
+- API authentication (UMLS, OAuth, API keys)
+- Complex parsing beyond column mapping
+
+New developers and AI should start here. This is the anchor implementation — the one we've perfected through iteration.
+
+See `infra/etl/CLAUDE.md` and `infra/README_ARCH_STRATEGY.md` for detailed technical guidance.
 
 ---
 

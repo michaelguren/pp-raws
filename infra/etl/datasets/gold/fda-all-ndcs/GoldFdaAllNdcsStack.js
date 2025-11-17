@@ -1,8 +1,6 @@
 const cdk = require("aws-cdk-lib");
 const glue = require("aws-cdk-lib/aws-glue");
 const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
-const cr = require("aws-cdk-lib/custom-resources");
-const iam = require("aws-cdk-lib/aws-iam");
 const path = require("path");
 
 /**
@@ -138,90 +136,32 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     goldJob.node.addDependency(temporalDeployment);
     goldJob.node.addDependency(dataWarehouseBucket);
 
-    // Register Delta Lake table in Glue Data Catalog using AwsCustomResource
-    // We use AwsCustomResource instead of CfnTable because CloudFormation always adds
-    // an empty Columns: [] array even with addPropertyDeletionOverride, which breaks
-    // Athena's ability to infer schema from the Delta _delta_log.
+    // Create Glue Crawler for Delta Lake table registration
+    // The crawler will register the Delta table in the Glue Data Catalog after the
+    // first successful GOLD job run. This AWS-native pattern replaces the previous
+    // AwsCustomResource approach for cleaner, more maintainable infrastructure.
     //
-    // This pattern uses the AWS SDK directly via Lambda to create the table with
-    // NO Columns property at all, allowing Athena v3 to read schema from Delta log.
-    const goldTable = new cr.AwsCustomResource(this, 'GoldTable', {
-      onCreate: {
-        service: 'Glue',
-        action: 'createTable',
-        parameters: {
-          DatabaseName: goldDatabase,
-          TableInput: {
-            Name: goldTableName,
-            Description: `Gold layer Delta table for ${dataset} with SCD Type 2 temporal versioning`,
-            TableType: 'EXTERNAL_TABLE',
+    // Runtime sequence: Deploy → Run job → Run crawler → Query Athena
+    const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
+      name: `${etlConfig.etl_resource_prefix}-gold-crawler-${dataset}`,
+      role: glueRole.roleArn,
+      databaseName: goldDatabase,
+      description: `Crawler for Delta Lake table ${goldTableName} in Gold layer`,
 
-            // CRITICAL: These parameters enable Athena Engine v3 native Delta reads
-            Parameters: {
-              'classification': 'delta',
-              'table_type': 'DELTA',
-              'EXTERNAL': 'TRUE',
-              'external': 'TRUE'
-            },
+      targets: {
+        s3Targets: [{
+          path: goldBasePath
+        }]
+      },
 
-            // Storage descriptor WITHOUT Columns property
-            // Delta Lake manages schema via _delta_log transaction log
-            StorageDescriptor: {
-              Location: goldBasePath,
-              InputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
-              OutputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
-              SerdeInfo: {
-                SerializationLibrary: 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
-              }
-              // Columns property intentionally omitted - Athena infers from _delta_log
-            }
-          }
-        },
-        physicalResourceId: cr.PhysicalResourceId.of(`${goldDatabase}-${goldTableName}`)
-      },
-      onUpdate: {
-        service: 'Glue',
-        action: 'updateTable',
-        parameters: {
-          DatabaseName: goldDatabase,
-          TableInput: {
-            Name: goldTableName,
-            Description: `Gold layer Delta table for ${dataset} with SCD Type 2 temporal versioning`,
-            TableType: 'EXTERNAL_TABLE',
-            Parameters: {
-              'classification': 'delta',
-              'table_type': 'DELTA',
-              'EXTERNAL': 'TRUE',
-              'external': 'TRUE'
-            },
-            StorageDescriptor: {
-              Location: goldBasePath,
-              InputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
-              OutputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
-              SerdeInfo: {
-                SerializationLibrary: 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
-              }
-            }
-          }
-        },
-        physicalResourceId: cr.PhysicalResourceId.of(`${goldDatabase}-${goldTableName}`)
-      },
-      onDelete: {
-        service: 'Glue',
-        action: 'deleteTable',
-        parameters: {
-          DatabaseName: goldDatabase,
-          Name: goldTableName
-        }
-      },
-      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
-        resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE
-      })
+      schemaChangePolicy: {
+        updateBehavior: 'UPDATE_IN_DATABASE',
+        deleteBehavior: 'DEPRECATE_IN_DATABASE'
+      }
     });
 
-    // Ensure table is created after job and bucket to prevent race conditions
-    goldTable.node.addDependency(goldJob);
-    goldTable.node.addDependency(dataWarehouseBucket);
+    // Crawler only needs bucket to exist (not the job - they are peers)
+    goldCrawler.node.addDependency(dataWarehouseBucket);
 
     // Create EventBridge rule for scheduling if enabled
     if (datasetConfig.schedule?.enabled) {
@@ -230,7 +170,6 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
 
     // Export useful properties
     this.goldJob = goldJob;
-    this.goldTable = goldTable;
     this.goldPath = goldBasePath;
 
     // CloudFormation outputs
@@ -250,8 +189,8 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'DeltaFormat', {
-      value: 'Delta Lake 3.0.0 (Glue 5.0) - AwsCustomResource (no Columns property)',
-      description: 'Delta Lake format with AwsCustomResource for proper Athena schema inference'
+      value: 'Delta Lake 3.0.0 - Glue Crawler-registered',
+      description: 'Delta Lake format with Glue Crawler for schema registration'
     });
   }
 }

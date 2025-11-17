@@ -5,7 +5,6 @@ const cdk = require("aws-cdk-lib");
 const { EtlCoreStack } = require("./EtlCoreStack");
 
 // Import orchestration stacks
-const { EtlBootstrapOrchestrationStack } = require("./orchestrations/bootstrap/EtlBootstrapOrchestrationStack");
 const { DailyFdaOrchestrationStack } = require("./orchestrations/daily/fda/DailyFdaOrchestrationStack");
 
 // Import dataset stacks - Bronze
@@ -41,15 +40,6 @@ const etlCoreStack = new EtlCoreStack(app, "pp-dw-etl-core", {
   env,
   description: "Core ETL infrastructure: S3 bucket, Glue databases, IAM roles"
 });
-
-// Deploy bootstrap orchestration infrastructure (Step Functions, Lambda)
-// This runs all bronze → silver → gold jobs in sequence, one time
-const etlBootstrapOrchestrationStack = new EtlBootstrapOrchestrationStack(app, "pp-dw-etl-bootstrap-orchestration", {
-  env,
-  etlCoreStack,
-  description: "ETL Bootstrap Orchestration: One-time initialization step function to run all bronze→silver→gold jobs"
-});
-etlBootstrapOrchestrationStack.addDependency(etlCoreStack);
 
 // Deploy daily FDA orchestration (Step Functions, Lambda)
 // Daily pipeline for FDA datasets: fda-nsde, fda-cder → fda-all-ndcs (bronze → silver → gold)

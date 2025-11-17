@@ -2,24 +2,87 @@
 
 **Daily ETL pipeline for FDA drug data** - Runs fda-nsde and fda-cder datasets through bronze → silver → gold layers with automated crawler management.
 
-## Data Flow
+## Orchestration Architecture
+
+### Control-Plane vs. Data-Plane Separation
+
+**Core Principle**: Individual Glue jobs are ignorant of crawlers and Glue Catalog; orchestration coordinates the catalog.
+
+- **Data-Plane** (Glue Jobs): Read data → Transform → Write to S3
+- **Control-Plane** (Step Functions + Lambdas): Check catalog → Start crawlers → Coordinate dependencies
+
+This separation ensures jobs are testable, portable, and catalog-agnostic.
+
+### Step Functions Flow
 
 ```
-Bronze (Parallel):
-  - fda-nsde job
-  - fda-cder job
-  → Check tables → Run crawlers if needed
-
-Silver (Sequential):
-  - fda-all-ndcs job (joins fda-nsde + fda-cder)
-  → Check table → Run crawler if needed
-
-Gold (Sequential):
-  - fda-all-ndcs job (temporal versioning)
-  → Check table → Run crawler if needed
-
-Success
+START
+  │
+  ├─→ [BRONZE LAYER - Parallel]
+  │   ├─→ Run fda-nsde Glue job
+  │   │   └─→ Writes to s3://pp-dw-{account}/bronze/fda-nsde/
+  │   │
+  │   └─→ Run fda-cder Glue job
+  │       └─→ Writes to s3://pp-dw-{account}/bronze/fda-cder/
+  │
+  ├─→ Wait for both jobs to complete
+  │
+  ├─→ Check Bronze Tables (Lambda: check-tables.js)
+  │   └─→ Returns list of missing tables
+  │
+  ├─→ Start Bronze Crawlers (Lambda: start-crawlers.js)
+  │   └─→ Invokes crawlers only for missing tables
+  │
+  ├─→ Wait 30 seconds for crawlers to complete
+  │
+  ├─→ [SILVER LAYER - Sequential]
+  │   └─→ Run fda-all-ndcs Glue job
+  │       └─→ Reads from bronze.fda_nsde + bronze.fda_cder (via Glue catalog)
+  │       └─→ Writes to s3://pp-dw-{account}/silver/fda-all-ndcs/
+  │
+  ├─→ Check Silver Table (Lambda: check-tables.js)
+  │   └─→ Returns list of missing tables
+  │
+  ├─→ Start Silver Crawler (Lambda: start-crawlers.js)
+  │   └─→ Invokes crawler only if table missing
+  │
+  ├─→ Wait 30 seconds for crawler to complete
+  │
+  ├─→ [GOLD LAYER - Sequential]
+  │   └─→ Run fda-all-ndcs Glue job (Delta Lake)
+  │       └─→ Reads from silver.fda_all_ndcs (via Glue catalog)
+  │       └─→ Writes to s3://pp-dw-{account}/gold/fda-all-ndcs/ (Delta format)
+  │
+  ├─→ Check Gold Table (Lambda: check-tables.js)
+  │   └─→ Returns list of missing tables
+  │
+  ├─→ Start Gold Crawler (Lambda: start-crawlers.js)
+  │   └─→ Invokes crawler only if table missing
+  │
+  ├─→ Wait 30 seconds for crawler to complete
+  │
+  └─→ SUCCESS
 ```
+
+**Key Characteristics**:
+1. Jobs write data to S3 and exit (no catalog awareness)
+2. Lambdas check if tables exist in Glue catalog
+3. Crawlers run only when tables are missing (not on every run)
+4. Each layer waits for upstream tables to be registered before proceeding
+5. Bronze runs in parallel; Silver and Gold are sequential (dependencies)
+
+**Crawler Invocation Logic** (check-tables.js):
+```javascript
+// Check if tables exist in Glue catalog
+const missingTables = await checkTables(database, expectedTables);
+
+// Only start crawlers for missing tables
+if (missingTables.length > 0) {
+  await startCrawlers(missingTables);
+}
+```
+
+This ensures crawlers run once (initial setup) and are skipped on subsequent runs.
 
 ## Deployment
 

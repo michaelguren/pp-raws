@@ -15,7 +15,7 @@ from pyspark.sql.functions import lit, col, when, substring, expr, split, lpad, 
 args = getResolvedOptions(sys.argv, [
     'JOB_NAME', 'dataset',
     'bronze_database', 'silver_database', 'silver_base_path',
-    'compression_codec', 'crawler_name',
+    'compression_codec',
     'nsde_table', 'cder_products_table', 'cder_packages_table'
 ])
 
@@ -39,7 +39,6 @@ dataset = args['dataset']
 bronze_database = args['bronze_database']
 silver_database = args['silver_database']
 silver_path = args['silver_base_path']
-crawler_name = args['crawler_name']
 
 # Get table names from source dataset configs
 nsde_table = args['nsde_table']
@@ -214,8 +213,9 @@ try:
         .parquet(silver_path)
 
     print("SILVER data written successfully")
-    print(f"Note: Run crawler manually when needed: {crawler_name}")
-    print("Command: aws glue start-crawler --name " + crawler_name)
+
+    # Table registration in Glue catalog handled by Step Functions orchestration
+    # (check-tables Lambda → start-crawlers Lambda → 30s wait)
 
     print("SILVER ETL completed successfully")
 

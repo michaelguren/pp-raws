@@ -1,34 +1,36 @@
-# Decision Record: Delta Table Registration via IaC (Glue 5.0 + Athena v3)
+# Decision Record: Delta Table Registration via Glue Crawlers (Glue 5.0 + Athena v3)
 
 ## Context
 
-Historically, our GOLD-layer Glue tables were created via crawlers to automatically infer schema and partitions. However, this approach caused repeated issues with Delta Lake tables:
-- Crawlers registered Delta tables as `classification=parquet` instead of `table_type='DELTA'`
-- Athena queries returned empty results despite data existing in S3
-- The process was non-deterministic and not suitable for CI/CD promotion (dev → stage → prod)
-- Symlink manifest tables created confusion between Athena v2 and v3 formats
+GOLD-layer Delta Lake tables require proper registration in the Glue Data Catalog to be queryable via Athena. We've evolved through three approaches:
+
+1. **Original Crawlers** (deprecated): Early crawlers registered Delta tables as `classification=parquet`, breaking Athena queries
+2. **AwsCustomResource** (deprecated): Lambda-backed custom resource with boto3 Glue API calls - added procedural complexity and IAM overhead
+3. **Glue Crawlers with Schema Change Policies** (current): Modern crawlers properly detect Delta Lake format with schema evolution support
 
 ## Decision
 
-We are **eliminating Glue Crawlers for GOLD Delta Lake tables** and defining all Delta tables directly via **Infrastructure as Code (CDK)**.
+We use **Glue Crawlers with schema change policies** for GOLD Delta Lake table registration.
 
-This represents the **simplest, most modern, AWS-native approach** to Delta Lake with Glue 5.0 + Athena v3 using only AWS primitives:
+This represents the **simplest, most AWS-native approach** to Delta Lake with Glue 5.0 + Athena v3:
 
 ### The Canonical Stack
 - **S3** → Raw data + Delta transaction log (`_delta_log/`)
 - **Glue ETL 5.0** → Spark 3.5 runtime with Delta Lake 3.0 built-in (`--datalake-formats=delta`)
-- **Glue Data Catalog (CfnTable)** → Declarative Delta table registration
+- **Glue Crawlers** → Automatic Delta table discovery and schema evolution (with Delta classifier)
 - **Athena v3 (Trino)** → Native Delta SQL engine (no manifests needed)
+- **Step Functions** → Orchestrates "run job → check tables → run crawler" sequence
 - **CloudFormation / CDK** → End-to-end IaC
 
-✅ 100% serverless, pay-per-query, CloudFormation-native
+✅ 100% serverless, pay-per-query, fully AWS-native
 ✅ No Databricks, EMR, Lake Formation permissions, or custom Lambda code
-✅ Glue's built-in Delta runtime + Athena's native reader eliminate complexity
+✅ Glue's built-in Delta runtime + Athena's native reader + automatic schema discovery
+✅ Zero job-level catalog management (separation of data-plane and control-plane)
 
 Each GOLD dataset stack now:
-1. Writes to a Delta Lake table in S3 (`/gold/<dataset>/`)
-2. Registers the Glue table automatically during deployment using `glue.CfnTable` (first-class CloudFormation resource)
-3. Sets the following metadata to ensure Athena v3 compatibility:
+1. **CDK defines infrastructure**: Glue job writes Delta Lake data to S3 (`/gold/<dataset>/`), Crawler defined with schema change policies
+2. **Step Functions orchestrates**: Runs job → check-tables Lambda → start-crawlers Lambda → wait for completion
+3. **Crawler registers table**: Discovers Delta format automatically, sets metadata for Athena v3:
    ```json
    {
      "classification": "delta",
@@ -36,40 +38,77 @@ Each GOLD dataset stack now:
      "EXTERNAL": "TRUE"
    }
    ```
-4. Uses correct Parquet I/O formats (not symlink text formats):
-   ```
-   InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
-   OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
-   ```
+4. **Schema evolution**: Crawler uses `UPDATE_IN_DATABASE` / `DEPRECATE_IN_DATABASE` policies to handle column additions
+
+---
+
+## ⚠️ RAWS Delta Invariant
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║  ALL GOLD Delta jobs MUST enable mergeSchema=true to make column            ║
+║  additions boring. This is enforced by temporal_versioning_delta.py.        ║
+║                                                                              ║
+║  - Initial writes: .option("mergeSchema", "true")                           ║
+║  - MERGE operations: spark.databricks.delta.schema.autoMerge.enabled=true   ║
+║                                                                              ║
+║  Combined with Glue Crawler schema change policies, this makes schema       ║
+║  evolution safe, automatic, and non-disruptive.                             ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
+**Job-Level Contract** (enforced by `temporal_versioning_delta.py`):
+1. All Delta writes use `.option("mergeSchema", "true")`
+2. MERGE operations use `spark.databricks.delta.schema.autoMerge.enabled=true`
+3. This is automatic - no job code changes needed when adding columns
+
+**Infrastructure-Level Contract** (enforced by CDK):
+1. Glue Crawlers use `schemaChangePolicy.updateBehavior: UPDATE_IN_DATABASE`
+2. Glue Crawlers use `schemaChangePolicy.deleteBehavior: DEPRECATE_IN_DATABASE`
+3. Crawlers automatically sync new columns to Glue catalog
+
+**Outcome**: Adding columns becomes a non-event:
+- Developer adds column to Silver layer
+- Gold job writes it (mergeSchema handles schema mismatch)
+- Crawler syncs it to catalog (UPDATE_IN_DATABASE handles new column)
+- Athena sees it immediately
+- Historical records show NULL for new column (correct behavior)
+
+**Testing**: See `DELTA_TEST_PLAN.md` Run 5 - validates end-to-end schema evolution.
+
+---
 
 ## Consequences
 
 ### Benefits
-- **Deterministic**: Table registration happens at deployment time, not on-demand
-- **CI/CD Ready**: Same IaC code promotes across environments
-- **No Manual Steps**: Zero SQL or CLI commands required
-- **Schema Evolution**: Delta transaction log manages schema automatically
+- **Automatic Discovery**: Crawlers detect Delta format and schema without manual definitions
+- **Schema Evolution**: Automatic catalog updates via crawler schema change policies
+- **Separation of Concerns**: Jobs write data, orchestration manages catalog (zero boto3.client("glue") in jobs)
+- **CI/CD Ready**: Crawlers defined in CDK, invoked by Step Functions orchestration
+- **No Lambda Complexity**: Pure CloudFormation resources (no custom Lambda-backed resources)
 - **Athena v3 Native**: Direct Delta Lake reads without manifest generation
-- **Version Control**: Table definitions tracked in Git like all other infrastructure
+- **Version Control**: Crawler definitions tracked in Git like all other infrastructure
 
 ### Trade-offs
-- Schema must be evolved through Delta writes (not crawler inference)
-- Table metadata updates require stack deployment (not crawler re-runs)
-- Initial learning curve for teams accustomed to crawler-based workflows
+- Initial table registration requires running crawler after first job (handled by Step Functions)
+- Schema changes may take 1-2 minutes for crawler to detect and update (vs immediate with CfnTable)
+- Crawler costs: ~$0.44/hour while running (~2-5 minutes per run = pennies)
 
 ## Why This Pattern Is Optimal
 
 ### Architectural Simplicity
 
-This is **the simplest possible Delta Lake implementation** using only AWS primitives. Compared to alternatives:
+This is **the simplest Delta Lake implementation** using only AWS-native primitives. Compared to alternatives:
 
-| Alternative Pattern              | Why It's More Complex                                    |
-|----------------------------------|----------------------------------------------------------|
-| **Glue Job + Crawler**           | Crawler misidentifies Delta as Parquet; creates wrong tables |
-| **AwsCustomResource / Lambda**   | Procedural logic, IAM complexity, non-deterministic      |
-| **Databricks / EMR Delta**       | External control plane + additional costs + IAM setup   |
-| **Lake Formation Delta**         | Over-engineered unless row-level permissions needed      |
-| **CDK `CfnTable` (this pattern)** | Declarative, portable, cost-free, version-controlled     |
+| Pattern                           | Pros                                      | Cons                                     | Status    |
+|-----------------------------------|-------------------------------------------|------------------------------------------|-----------|
+| **Glue Crawler (current)**        | Automatic discovery, schema evolution, no Lambda | Initial registration delay (~2 min)     | ✅ Active |
+| **CDK CfnTable**                  | Immediate registration, zero runtime cost | Manual schema definition, no auto-evolution | Alternative |
+| **AwsCustomResource**             | (none - deprecated)                       | Lambda complexity, IAM overhead, brittle | ❌ Deprecated |
+| **Databricks / EMR Delta**        | Advanced features (streaming, Z-order)    | External control plane, higher costs     | Overkill  |
+| **Lake Formation Delta**          | Fine-grained permissions                  | Over-engineered for most use cases       | Overkill  |
 
 ### Operational Characteristics
 
@@ -93,82 +132,118 @@ Otherwise, this pattern scales to billions of rows and hundreds of datasets.
 
 ## Implementation Pattern
 
-### CDK Stack (GoldStack.js) - Production Hardened
+### CDK Stack (GoldStack.js) - Crawler Pattern
 
 ```javascript
 const cdk = require("aws-cdk-lib");
 const glue = require("aws-cdk-lib/aws-glue");
 
-// Gold table name (hyphens → underscores for Glue)
-const goldTableName = dataset.replace(/-/g, '_');
-
 // Build paths using convention
 const goldBasePath = `s3://${bucketName}/gold/${dataset}/`;
 
-// Defensive validation for S3 path
-if (!goldBasePath.startsWith('s3://')) {
-  throw new Error(`goldBasePath must be an S3 URI, got: ${goldBasePath}`);
-}
-
-// Register Delta Lake table using pure CDK (first-class CloudFormation resource)
-const goldTable = new glue.CfnTable(this, 'GoldTable', {
+// Create Glue Crawler for Delta Lake table discovery
+const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
+  name: `${etlConfig.etl_resource_prefix}-gold-crawler-${dataset}`,
+  description: `Crawler for GOLD ${dataset} Delta Lake table`,
+  role: glueRole.roleArn,
   databaseName: goldDatabase,
-  catalogId: this.account,  // Resolves at deploy-time for multi-account compatibility
-  tableInput: {
-    name: goldTableName,
-    description: `Gold layer Delta table for ${dataset} with SCD Type 2 temporal versioning`,
 
-    // Note: tableType is inferred by Glue when table_type='DELTA', but we keep it explicit
-    tableType: 'EXTERNAL_TABLE',
+  // Target S3 path where Delta Lake data is written
+  targets: {
+    s3Targets: [{
+      path: goldBasePath
+    }]
+  },
 
-    // CRITICAL: These parameters enable Athena Engine v3 native Delta reads
-    parameters: {
-      'classification': 'delta',      // Identifies table format as Delta Lake
-      'table_type': 'DELTA',           // Enables Athena v3 native Delta reads
-      'EXTERNAL': 'TRUE',              // Marks table as externally managed
-      'external': 'TRUE'               // Duplicate for AWS normalization across regions
-    },
+  // CRITICAL: Schema change policies enable automatic evolution
+  schemaChangePolicy: {
+    updateBehavior: 'UPDATE_IN_DATABASE',      // Add new columns
+    deleteBehavior: 'DEPRECATE_IN_DATABASE'    // Mark removed columns
+  },
 
-    // Storage descriptor with correct Parquet I/O formats for Delta Lake
-    // Schema Evolution Note: Glue 5.0 + Delta supports automatic catalog updates via:
-    //   spark.databricks.delta.schema.autoMerge.enabled = true
-    storageDescriptor: {
-      location: goldBasePath,
-      inputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
-      outputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
-      serdeInfo: {
-        serializationLibrary: 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
-      }
-      // columns array omitted - Delta Lake manages schema via transaction log
+  // Crawler configuration for Delta Lake
+  configuration: JSON.stringify({
+    Version: 1.0,
+    CrawlerOutput: {
+      Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
+      Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
     }
+  }),
+
+  // On-demand only (invoked by Step Functions)
+  schedule: {
+    scheduleExpression: ''  // Empty = no schedule
   }
 });
 
-// Ensure table is created after job to prevent race conditions
-goldTable.node.addDependency(goldJob);
-goldTable.node.addDependency(dataWarehouseBucket);
+// Crawler depends on bucket (not job - they're peers)
+goldCrawler.node.addDependency(dataWarehouseBucket);
+
+// Export crawler name for Step Functions orchestration
+this.goldCrawler = goldCrawler;
 ```
 
-### Production Hardening Features
+### Step Functions Orchestration
 
-1. **Pure CloudFormation**: Uses `glue.CfnTable` - first-class resource, not Lambda-backed
-2. **Multi-Account Safe**: `this.account` resolves at deploy-time (not synth-time)
-3. **Region Normalization**: Dual `EXTERNAL`/`external` handles AWS casing inconsistencies
-4. **Defensive Validation**: S3 URI check catches config errors at synth time
-5. **Explicit Dependencies**: Prevents race conditions during stack creation
-6. **Schema Evolution**: Delta manages schema; comment documents auto-merge capability
-7. **Fully Declarative**: No procedural logic, no IAM complexity
-8. **Environment Portable**: Promotes identically across dev/stage/prod
+Crawler invocation is handled by Step Functions (NOT by jobs):
+
+```javascript
+// In orchestration stack (e.g., DailyFdaOrchestrationStack.js)
+const goldJobTask = new tasks.GlueStartJobRun(this, 'RunGoldJob', {
+  glueJobName: goldStack.goldJob.name,
+  integrationPattern: sfn.IntegrationPattern.RUN_JOB
+});
+
+const checkTablesTask = new tasks.LambdaInvoke(this, 'CheckTables', {
+  lambdaFunction: checkTablesLambda,
+  payload: sfn.TaskInput.fromObject({
+    database: goldDatabase,
+    expected_tables: [goldTableName]
+  })
+});
+
+const startCrawlersTask = new tasks.LambdaInvoke(this, 'StartCrawlers', {
+  lambdaFunction: startCrawlersLambda,
+  payload: sfn.TaskInput.fromObject({
+    crawler_names: [goldStack.goldCrawler.name]
+  })
+});
+
+const waitForCrawler = new sfn.Wait(this, 'WaitForCrawler', {
+  time: sfn.WaitTime.duration(cdk.Duration.seconds(30))
+});
+
+// Chain: Job → Check Tables → Start Crawler → Wait
+goldJobTask
+  .next(checkTablesTask)
+  .next(startCrawlersTask)
+  .next(waitForCrawler);
+```
+
+### Production Features
+
+1. **Pure CloudFormation**: `glue.CfnCrawler` - first-class resource, no Lambda-backed logic
+2. **Automatic Discovery**: Crawler detects Delta format and schema from `_delta_log/`
+3. **Schema Evolution**: `UPDATE_IN_DATABASE` / `DEPRECATE_IN_DATABASE` handles column changes
+4. **Separation of Concerns**: Jobs write data, orchestration manages catalog
+5. **Zero Job Coupling**: Jobs never call `boto3.client("glue")` or know about crawlers
+6. **On-Demand Only**: No crawler schedule; invoked by Step Functions only
+7. **Testability**: Can run crawler manually for debugging: `aws glue start-crawler --name <name>`
+8. **Environment Portable**: Same pattern across dev/stage/prod
 
 ## Validation
 
-After deployment, verify table registration:
+After deployment and first orchestration run, verify table registration:
 
 ```bash
-# Check Glue catalog
+# 1. Check crawler completed successfully
+aws glue get-crawler --name pp-dw-gold-crawler-fda-all-ndcs \
+  --query 'Crawler.LastCrawl.Status' --output text
+# Expected: SUCCEEDED
+
+# 2. Check Glue catalog table metadata
 aws glue get-table --database-name pp_dw_gold --name fda_all_ndcs \
   --query 'Table.Parameters' --output json
-
 # Expected output:
 {
   "classification": "delta",
@@ -176,28 +251,41 @@ aws glue get-table --database-name pp_dw_gold --name fda_all_ndcs \
   "EXTERNAL": "TRUE"
 }
 
-# Query in Athena (Engine v3)
-SELECT COUNT(*) FROM pp_dw_gold.fda_all_ndcs;
+# 3. Query in Athena (Engine v3)
+SELECT COUNT(*) FROM pp_dw_gold.fda_all_ndcs WHERE status = 'current';
 ```
 
-## Migration from Crawler-Based Pattern
+## Historical Note: Migration from AwsCustomResource Pattern
 
-For existing gold datasets using crawlers:
+**Context**: Earlier implementations used `AwsCustomResource` (Lambda-backed custom resource) to register Delta tables via boto3 Glue API calls. This added procedural complexity, IAM overhead, and non-deterministic behavior.
 
-1. **Update Stack**: Replace `CfnCrawler` with `glue.CfnTable` pattern above
-2. **Remove Crawler References**: Delete `crawler_name` from job arguments
-3. **Update Job Script**: Remove crawler-related output messages
-4. **Delete Old Table**: `aws glue delete-table --database pp_dw_gold --name <old_table>`
-5. **Deploy Stack**: Table will be recreated with correct metadata via CloudFormation
-6. **Validate**: Run Athena query to confirm data is accessible
+**Migration Path** (if migrating from AwsCustomResource):
+
+1. **Update Stack**: Replace `AwsCustomResource` block with `glue.CfnCrawler` pattern (see above)
+2. **Remove Lambda IAM Policies**: Delete Glue API permissions for custom resource Lambda
+3. **Remove Job Coupling**: Delete any `crawler_name` arguments from job definitions
+4. **Update Job Scripts**: Remove any crawler-related print statements or boto3 calls
+5. **Delete Old Table** (optional): `aws glue delete-table --database pp_dw_gold --name <old_table>`
+6. **Deploy Stack**: Crawler will be created via CloudFormation
+7. **Run Orchestration**: Step Functions will invoke crawler automatically after job
+8. **Validate**: Verify table exists and Athena queries work
+
+**Why Crawlers Are Better**:
+- ✅ No Lambda complexity (pure CloudFormation)
+- ✅ No IAM policy juggling
+- ✅ Automatic schema discovery from Delta transaction log
+- ✅ Built-in schema evolution support
+- ✅ Consistent with Bronze/Silver layers (same pattern everywhere)
+- ✅ Separation of concerns (data-plane vs control-plane)
 
 ## Status
 
-- **Implemented**: `fda-all-ndcs` (2025-10-25)
+- **Implemented**: `fda-all-ndcs` (Crawler pattern - 2025-11-16)
 - **Pending**: `rxnorm-products`, `rxnorm-ndc-mappings`, `drug-product-codesets`
 
 ---
 
-**Decision Date**: 2025-10-25
+**Decision Date**: 2025-11-16 (Updated from 2025-10-25)
 **Author**: RAWS Architecture Team
-**Status**: Accepted
+**Status**: Accepted (Crawler Pattern)
+**Previous Patterns**: AwsCustomResource (deprecated 2025-11-16), CfnTable (alternative, not implemented)

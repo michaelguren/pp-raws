@@ -330,6 +330,99 @@ aws glue start-crawler --name pp-dw-gold-fda-all-ndc-crawler
 
 ---
 
+## Schema Evolution
+
+This dataset supports **safe schema evolution** using Delta Lake's built-in capabilities. You can add new columns without breaking existing pipelines or requiring full rewrites.
+
+### Pattern
+
+The gold layer uses:
+- **`mergeSchema=true`** for initial write operations
+- **`spark.databricks.delta.schema.autoMerge.enabled=true`** for MERGE operations (SCD2 updates)
+
+This configuration is set automatically in the shared temporal versioning library.
+
+### Evolution Rules
+
+To ensure safe, predictable schema changes:
+
+1. **Add columns only** - Never drop or rename columns in place
+2. **Widening types only** - Type changes must be compatible (e.g., `int` → `bigint`, `float` → `double`)
+3. **Nullable by default** - New columns must be nullable (historical records will have NULL)
+4. **Rename pattern** - To rename: add new column → backfill → deprecate old column
+
+### Operational Sequence
+
+When adding a new column:
+
+1. **Deploy code** - Update silver job to include the new column
+2. **Run silver job** - Write updated data to silver layer
+3. **Run silver crawler** - Update silver table schema in Glue catalog
+4. **Run gold job** - Process with schema evolution enabled
+5. **Run gold crawler** - Sync gold table schema in Glue catalog
+
+The Delta table will automatically:
+- Add the new column to the schema
+- Populate it for new/changed records
+- Return NULL for historical records (which existed before the column was added)
+
+### Example: Adding `approval_date` Column
+
+```bash
+# 1. Deploy updated silver job with new column
+cdk deploy pp-dw-etl-silver-fda-all-ndcs
+
+# 2. Run silver job
+aws glue start-job-run --job-name pp-dw-silver-fda-all-ndcs
+
+# 3. Run silver crawler
+aws glue start-crawler --name pp-dw-silver-fda-all-ndcs-crawler
+
+# 4. Run gold job (schema evolution happens automatically)
+aws glue start-job-run --job-name pp-dw-gold-fda-all-ndcs
+
+# 5. Run gold crawler to sync Glue catalog
+aws glue start-crawler --name pp-dw-gold-fda-all-ndcs-crawler
+```
+
+### Query Behavior After Schema Evolution
+
+```sql
+-- New column appears in current records
+SELECT ndc_11, proprietary_name, approval_date
+FROM pp_dw_gold.fda_all_ndcs
+WHERE status = 'current'
+  AND approval_date IS NOT NULL;
+
+-- Historical records return NULL for new column
+SELECT ndc_11, proprietary_name, approval_date, active_from
+FROM pp_dw_gold.fda_all_ndcs
+WHERE status = 'historical'
+  AND active_from < '2025-11-01';
+-- approval_date will be NULL for records created before schema change
+```
+
+### Validation
+
+The test harness includes **Run 5: Schema Evolution** to validate this pattern end-to-end:
+
+```bash
+cd infra/etl/datasets/gold/fda-all-ndcs/tests
+python3 test_delta_gold_fda_all_ndcs.py --test-date 2025-11-16 --run-only 5
+```
+
+This test:
+- Adds a new column to the silver data
+- Runs the gold job with schema evolution
+- Runs the crawler to sync the catalog
+- Validates that:
+  - New column appears in Glue catalog
+  - Athena can query the new column
+  - Historical rows have NULL for the new column
+  - Current rows have the new column populated
+
+---
+
 ## Future Enhancements
 
 - **Automated scheduling**: EventBridge rule to run after silver layer completes

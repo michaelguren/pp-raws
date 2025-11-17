@@ -10,6 +10,34 @@ The Delta Lake implementation replaces Parquet full-overwrite with efficient MER
 - **Time travel** - Query historical versions
 - **Schema evolution** - Automatic with `mergeSchema=true`
 
+---
+
+## ⚠️ RAWS Delta Invariant
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║  ALL GOLD Delta jobs MUST enable mergeSchema=true to make column            ║
+║  additions boring. This is enforced by temporal_versioning_delta.py.        ║
+║                                                                              ║
+║  - Initial writes: .option("mergeSchema", "true")                           ║
+║  - MERGE operations: spark.databricks.delta.schema.autoMerge.enabled=true   ║
+║                                                                              ║
+║  Schema evolution becomes a non-event. Tests validate this behavior.        ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
+**What this means:**
+- Adding new columns requires NO code changes in jobs
+- New columns appear as NULL in historical records
+- Crawlers automatically sync schema to Glue catalog
+- Test Run 5 validates end-to-end schema evolution
+
+This is the foundation for safe, routine schema changes without production incidents.
+
+---
+
 ## Test Scenarios
 
 We'll run 4 controlled tests:

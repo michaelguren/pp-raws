@@ -4,11 +4,23 @@ Temporal Versioning Utility for PySpark Gold Layer Jobs - Delta Lake Edition
 Implements temporal validity pattern (SCD Type 2) using Delta Lake MERGE operations.
 Uses end-of-time pattern (9999-12-31) instead of NULL for current records.
 
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                        RAWS DELTA INVARIANT                                  ║
+║                                                                              ║
+║  ALL GOLD Delta jobs MUST enable mergeSchema=true to make column            ║
+║  additions boring. This library enforces this on all write paths.           ║
+║                                                                              ║
+║  - Initial writes: .option("mergeSchema", "true")                           ║
+║  - MERGE operations: spark.databricks.delta.schema.autoMerge.enabled=true   ║
+║                                                                              ║
+║  This ensures schema evolution is safe, automatic, and non-disruptive.      ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
 Benefits vs. Parquet:
 - 90%+ reduction in S3 writes (only changed records)
 - ACID transactions
 - Time travel capabilities
-- Automatic schema evolution
+- Automatic schema evolution (enforced by RAWS invariant)
 - Optimized read performance with ZORDER
 
 Usage:
@@ -106,7 +118,12 @@ def apply_temporal_versioning_delta(
     # Normalize business_key to list for consistent handling
     business_keys = [business_key] if isinstance(business_key, str) else business_key
 
+    # Enable schema evolution for Delta Lake MERGE operations
+    # This allows adding new columns without breaking existing pipelines
+    spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
+
     print(f"[DELTA] Starting Delta Lake temporal versioning")
+    print(f"[DELTA] Schema evolution enabled (autoMerge=true)")
     print(f"[DELTA] Business key(s): {business_keys}")
     print(f"[DELTA] Tracking {len(business_columns)} business columns")
     print(f"[DELTA] Run date: {run_date}")
@@ -161,6 +178,7 @@ def apply_temporal_versioning_delta(
         print(f"[DELTA] Writing {total_count} initial records to Delta table...")
 
         # Write initial Delta table with status partitioning
+        # RAWS INVARIANT: mergeSchema=true enables safe schema evolution
         result_df.write \
             .format("delta") \
             .mode("overwrite") \
@@ -253,6 +271,7 @@ def apply_temporal_versioning_delta(
         )
 
         # Append new records to Delta table
+        # RAWS INVARIANT: mergeSchema=true enables safe schema evolution
         new_df.write \
             .format("delta") \
             .mode("append") \
@@ -297,6 +316,7 @@ def apply_temporal_versioning_delta(
             .withColumn("updated_at", F.current_timestamp())
         )
 
+        # RAWS INVARIANT: mergeSchema=true enables safe schema evolution
         changed_new_df.write \
             .format("delta") \
             .mode("append") \

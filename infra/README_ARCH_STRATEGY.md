@@ -118,6 +118,36 @@ Build a lightning-fast drug lookup web application for students, healthcare prof
 | `rxclass-drug-members` | RxNav API | Class → Drug relationships with `rela` | Monthly |
 | `rxnorm-spl-mappings` | DailyMed API | RxCUI → SPL SET ID mappings | Monthly |
 
+### Reference Implementation - Pattern A (HTTP/ZIP)
+
+**Canonical Example:** `infra/etl/datasets/bronze/fda-nsde/`
+
+This is the **blessed bronze pattern** for HTTP/ZIP datasets. New CSV-based sources should follow this structure:
+
+**Architecture:**
+- Uses `EtlStackFactory` (shared CDK code)
+- Uses `bronze_http_job.py` (shared Glue job)
+- Zero Glue API calls in job code (pure data transformation)
+- Catalog managed by orchestration (Step Functions → crawlers)
+
+**Files:**
+- `FdaNsdeStack.js` - Factory-based CDK stack
+- `config.json` - Schema definitions and column mappings
+- No custom Glue job required
+
+**Control Flow:**
+1. Job writes data to S3
+2. Step Functions checks if tables exist
+3. Step Functions starts crawlers if needed
+4. Crawlers register tables in Glue catalog
+
+**Use Pattern B (custom jobs) only when:**
+- Non-CSV formats (RRF, JSON, binary)
+- Authentication required (APIs, UMLS, OAuth)
+- Complex transformations beyond column mapping
+
+See `infra/etl/CLAUDE.md` for detailed implementation guidance.
+
 ### Gold Layer (Planned)
 | Table | Description | Use Case |
 |-------|-------------|----------|

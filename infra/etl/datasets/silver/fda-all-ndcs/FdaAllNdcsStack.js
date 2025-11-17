@@ -32,15 +32,11 @@ class FdaAllNdcsStack extends cdk.Stack {
     // Get worker configuration based on data size category
     const workerConfig = etlConfig.glue_worker_configs[datasetConfig.data_size_category];
 
-    // Extract table names from source dataset configs
-    // For single-table datasets, use the table name from file_table_mapping
+    // Extract table names from source dataset configs using explicit keys
     // Table names in Glue have hyphens converted to underscores
-    const nsdeTableName = Object.values(fdaNsdeConfig.file_table_mapping)[0].replace(/-/g, '_');
-
-    // For multi-table datasets like fda-cder, get table names for products and packages
-    const cderTableNames = Object.values(fdaCderConfig.file_table_mapping).map(name => name.replace(/-/g, '_'));
-    const cderProductsTable = cderTableNames.find(name => name.includes('products'));
-    const cderPackagesTable = cderTableNames.find(name => name.includes('packages'));
+    const nsdeTableName = fdaNsdeConfig.file_table_mapping['Comprehensive_NDC_SPL_Data_Elements_File.csv'].replace(/-/g, '_');
+    const cderProductsTable = fdaCderConfig.file_table_mapping['product.txt'].replace(/-/g, '_');
+    const cderPackagesTable = fdaCderConfig.file_table_mapping['package.txt'].replace(/-/g, '_');
 
     // Build paths using convention - SILVER layer paths
     const silverBasePath = `s3://${bucketName}/silver/${dataset}/`;
@@ -75,6 +71,9 @@ class FdaAllNdcsStack extends cdk.Stack {
       maxRetries: etlConfig.glue_defaults.max_retries,
 
       // Job arguments with all configuration pre-computed
+      // Note: Crawler execution handled by Step Functions orchestration
+      // (check-tables Lambda → start-crawlers Lambda → 30s wait)
+      // Silver job focuses only on data transformation
       defaultArguments: {
         '--job-language': 'python',
         '--job-bookmark-option': 'job-bookmark-disable',
@@ -99,7 +98,6 @@ class FdaAllNdcsStack extends cdk.Stack {
 
         // Compression and performance settings
         '--compression_codec': 'ZSTD',
-        '--crawler_name': `${etlConfig.etl_resource_prefix}-silver-${dataset}-crawler`,
 
         // Additional job-specific arguments
         '--enable-auto-scaling': 'true'

@@ -5,11 +5,7 @@
   "main": "index.js",
   "scripts": {
     "bootstrap": "cdk bootstrap",
-    "etl:deploy": "cd infra/etl && cdk deploy --all",
-    "etl:deploy:core": "cd infra/etl && cdk deploy pp-dw-etl-core",
-    "etl:deploy:gold-fda": "cd infra/etl && cdk deploy pp-dw-etl-gold-fda-all-ndcs",
-    "etl:deploy:gold-rxnorm": "cd infra/etl && cdk deploy pp-dw-etl-gold-rxnorm-products",
-    "etl:deploy:gold-all": "cd infra/etl && cdk deploy pp-dw-etl-gold-fda-all-ndc pp-dw-etl-gold-rxnorm-products",
+    "etl:deploy:fda": "cd infra/etl && cdk deploy pp-dw-etl-core pp-dw-etl-fda-nsde pp-dw-etl-fda-cder pp-dw-etl-silver-fda-all-ndcs pp-dw-etl-gold-fda-all-ndcs pp-dw-daily-fda-orchestration",
     "etl:diff": "cd infra/etl && cdk diff --all",
     "etl:synth": "cd infra/etl && cdk synth",
     "api:deploy": "cd infra/api && cdk deploy --all",

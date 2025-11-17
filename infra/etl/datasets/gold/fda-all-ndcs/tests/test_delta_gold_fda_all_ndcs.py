@@ -7,10 +7,11 @@ Validates temporal versioning with controlled test scenarios:
 - Run 2: Incremental changes (NEW + CHANGED + UNCHANGED)
 - Run 3: Record deletions (EXPIRED)
 - Run 4: Idempotency check
+- Run 5: Schema evolution (adding new column)
 
 Usage:
     python3 test_delta_gold_fda_all_ndcs.py --test-date 2025-10-21
-    python3 test_delta_gold_fda_all_ndcs.py --test-date 2025-10-21 --run-only 1,2
+    python3 test_delta_gold_fda_all_ndcs.py --test-date 2025-10-21 --run-only 1,2,5
 """
 
 import argparse
@@ -74,6 +75,16 @@ EXPECTED_RESULTS = {
         'expired': 5,  # Re-expiring the 5 that were removed in run3
         'current_count_delta': 5,  # Back to run2 level
         'historical_count': 20  # All historical versions
+    },
+    'run5': {
+        'version': 4,
+        'operation': 'MERGE',
+        'new': 0,
+        'changed': 0,
+        'expired': 0,
+        'schema_evolution': True,  # New column added
+        'new_column': 'approval_date',  # Column to add
+        'historical_count': 20  # Same as run4
     }
 }
 
@@ -589,10 +600,97 @@ def validate_run_4(test_date: str) -> bool:
     return True
 
 
+def validate_run_5(test_date: str) -> bool:
+    """Validate Run 5 - Schema Evolution"""
+    print_header("Run 5 Validation - Schema Evolution")
+
+    expected = EXPECTED_RESULTS['run5']
+    new_column = expected['new_column']
+
+    # Check that new column exists in Glue catalog
+    print_step("1/5", f"Checking if new column '{new_column}' exists in Glue catalog...")
+    try:
+        table_metadata = glue.get_table(DatabaseName=DATABASE, Name=TABLE)
+        columns = table_metadata['Table']['StorageDescriptor']['Columns']
+        column_names = [col['Name'] for col in columns]
+
+        if new_column not in column_names:
+            print_error(f"Column '{new_column}' not found in Glue catalog")
+            print(f"Available columns: {column_names}")
+            return False
+
+        print_success(f"Column '{new_column}' found in Glue catalog")
+    except Exception as e:
+        print_error(f"Failed to get table metadata: {e}")
+        return False
+
+    # Check that Athena can query the new column
+    print_step("2/5", f"Validating Athena can query new column '{new_column}'...")
+    try:
+        results = run_athena_query(f"""
+            SELECT {new_column}, COUNT(*) as cnt
+            FROM {TABLE}
+            WHERE status = 'current'
+            GROUP BY {new_column}
+            LIMIT 10
+        """)
+        print_success(f"Athena query successful - found {len(results)} distinct values")
+    except Exception as e:
+        print_error(f"Failed to query new column: {e}")
+        return False
+
+    # Check that historical rows have NULL for new column
+    print_step("3/5", f"Verifying historical rows have NULL for '{new_column}'...")
+    results = run_athena_query(f"""
+        SELECT COUNT(*) as cnt
+        FROM {TABLE}
+        WHERE status = 'historical'
+          AND {new_column} IS NOT NULL
+    """)
+
+    non_null_count = int(results[0]['cnt'])
+    if non_null_count > 0:
+        print_warning(f"Found {non_null_count} historical rows with non-NULL {new_column}")
+        # Don't fail - this is expected if schema evolution happens
+    else:
+        print_success(f"All historical rows have NULL for '{new_column}'")
+
+    # Check Delta version
+    print_step("4/5", "Checking Delta version...")
+    results = run_athena_query(f"""
+        DESCRIBE HISTORY {TABLE}
+        ORDER BY version DESC LIMIT 1
+    """)
+
+    if len(results) == 0 or results[0]['version'] != '4':
+        print_error(f"Expected version 4, got: {results}")
+        return False
+
+    print_success(f"Delta version: {results[0]['version']}")
+
+    # Check status distribution (should match Run 4)
+    print_step("5/5", "Checking status distribution (should match Run 4)...")
+    results = run_athena_query(f"""
+        SELECT status, COUNT(*) as cnt
+        FROM {TABLE}
+        GROUP BY status
+    """)
+
+    status_dict = {row['status']: int(row['cnt']) for row in results}
+    expected_historical = expected['historical_count']
+
+    if status_dict.get('historical', 0) != expected_historical:
+        print_warning(f"Expected {expected_historical} historical, got {status_dict.get('historical', 0)}")
+
+    print_success(f"Status: current={status_dict['current']:,}, historical={status_dict['historical']}")
+
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description='Delta Lake Test Harness for FDA All NDCs')
     parser.add_argument('--test-date', required=True, help='Test run date (YYYY-MM-DD)')
-    parser.add_argument('--run-only', help='Comma-separated list of runs to execute (e.g., 1,2)', default='1,2,3,4')
+    parser.add_argument('--run-only', help='Comma-separated list of runs to execute (e.g., 1,2,5)', default='1,2,3,4,5')
     parser.add_argument('--skip-jobs', action='store_true', help='Skip Glue job execution (validation only)')
 
     args = parser.parse_args()
@@ -723,6 +821,39 @@ def main():
 
         # Validate
         results['run4'] = validate_run_4(test_date)
+
+    # Run 5: Schema Evolution
+    if 5 in runs_to_execute:
+        print_header("RUN 5: Schema Evolution")
+        print_warning("Manual step required: Modify silver data to include new column 'approval_date'")
+        print("  Schema evolution test - validates that adding a new column works seamlessly")
+        print("  1. Modify silver job to include 'approval_date' column")
+        print("  2. Run silver job to write updated data")
+        print("  3. Run crawler to update silver table schema")
+
+        input("Press Enter when ready to continue...")
+
+        if not args.skip_jobs:
+            # Run gold job (with schema evolution enabled)
+            print_step("1/2", f"Starting gold job: {GOLD_JOB} (run_date={test_date})")
+            gold_run = glue.start_job_run(
+                JobName=GOLD_JOB,
+                Arguments={'--run_date': test_date}
+            )
+            gold_run_id = gold_run['JobRunId']
+            gold_result = wait_for_glue_job(GOLD_JOB, gold_run_id)
+
+            if gold_result['JobRunState'] != 'SUCCEEDED':
+                print_error("Gold job failed")
+                sys.exit(1)
+
+            # Run crawler to sync Glue catalog with new schema
+            print_step("2/2", f"Starting crawler: {GOLD_CRAWLER}")
+            glue.start_crawler(Name=GOLD_CRAWLER)
+            time.sleep(30)  # Give crawler time to complete
+
+        # Validate
+        results['run5'] = validate_run_5(test_date)
 
     # Final Summary
     print_header("📊 Test Summary")

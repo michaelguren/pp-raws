@@ -8,6 +8,154 @@
 - **Kill-and-Fill**: Complete data refresh each run
 - **Config-Driven**: `config.json` files define all dataset behavior
 
+---
+
+## ⚠️ HARD RULE: Jobs Never Touch Glue Catalog
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║  🚫 Glue jobs MUST NOT call Glue APIs or register tables/partitions.       ║
+║                                                                              ║
+║  ✅ All catalog management is done via Glue Crawlers + Step Functions.     ║
+║                                                                              ║
+║  ✅ Jobs are pure data-plane: read → transform → write to S3.              ║
+║                                                                              ║
+║  This rule prevents brittle, non-deterministic catalog management.          ║
+║  Violation of this rule will cause orchestration failures and tech debt.    ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
+**What this means in practice:**
+- ❌ **NEVER** use `boto3.client("glue")` in job code
+- ❌ **NEVER** call `glue.create_table()`, `glue.update_table()`, `glue.create_partition()`
+- ❌ **NEVER** invoke crawlers programmatically from jobs
+- ❌ **NEVER** check if tables exist via Glue APIs
+- ✅ **ALWAYS** delegate catalog concerns to Step Functions orchestration
+- ✅ **ALWAYS** use `glueContext.create_dynamic_frame.from_catalog()` to read tables (AWS-native method)
+
+**Enforcement:** All existing jobs (NSDE, CDER, fda-all-ndcs Silver/Gold) follow this rule. Do not regress.
+
+---
+
+## Blessed Pattern: Data-Plane vs. Control-Plane Separation
+
+**Principle**: Jobs handle data transformation. Orchestration handles infrastructure coordination.
+
+### Core Tenet
+
+> **Jobs should never call `boto3.client("glue")` or manage the Glue Data Catalog.**
+>
+> Catalog management is an orchestration concern, not a data engineering concern.
+
+### What This Means
+
+**Data-Plane (Glue Jobs)**:
+- ✅ Read data from S3 or Glue catalog (via `glueContext.create_dynamic_frame.from_catalog()`)
+- ✅ Transform, join, aggregate, enrich data
+- ✅ Write data to S3 (with appropriate partitioning in paths)
+- ✅ Log completion status
+- ❌ **NEVER** call Glue APIs to create/update tables
+- ❌ **NEVER** call Glue APIs to register partitions
+- ❌ **NEVER** invoke crawlers programmatically
+- ❌ **NEVER** check if tables exist via boto3
+
+**Control-Plane (Step Functions + Crawlers)**:
+- ✅ Start Glue jobs
+- ✅ Check if tables exist in Glue catalog (via Lambda)
+- ✅ Start crawlers when tables are missing (via Lambda)
+- ✅ Wait for crawlers to complete
+- ✅ Coordinate dependencies (Bronze → Silver → Gold)
+- ✅ Handle retries and error cases
+
+**Infrastructure (CDK Stacks)**:
+- ✅ Define Glue jobs (no catalog awareness in job code)
+- ✅ Define crawlers with schema change policies
+- ✅ Define Step Functions orchestration
+- ✅ For Delta Lake: Use Glue Crawlers with schema change policies (see DELTA_TABLE_REGISTRATION.md)
+
+### Reference Implementation
+
+**FDA NSDE Bronze** (`datasets/bronze/fda-nsde/`):
+- Uses factory pattern → `EtlStackFactory`
+- Shared job: `shared/runtime/https_zip/bronze_http_job.py`
+- **Zero Glue API calls** in job code
+- Final line: `print("Note: Run crawlers to update Glue catalog")`
+- Crawler defined in CDK, invoked by Step Functions
+
+**FDA All NDCs Silver** (`datasets/silver/fda-all-ndcs/`):
+- Custom transformation job
+- Reads Bronze tables via `glueContext.create_dynamic_frame.from_catalog()`
+- Writes to S3 Parquet
+- **Zero Glue API calls**
+- Comment: `# Table registration handled by Step Functions orchestration`
+
+**FDA All NDCs Gold** (`datasets/gold/fda-all-ndcs/`):
+- Temporal versioning (SCD Type 2)
+- Reads Silver tables via catalog
+- Writes Delta Lake to S3
+- **Zero Glue API calls**
+- Crawler with schema change policies managed via CDK
+
+### Benefits
+
+1. **Testability**: Jobs can be unit tested without AWS infrastructure
+2. **Portability**: Jobs work with any catalog (Hive, Iceberg REST, Lake Formation)
+3. **Debuggability**: Catalog issues? Check orchestration. Data issues? Check job.
+4. **Maintainability**: Single source of truth for catalog strategy
+5. **Future-proof**: Easy to swap catalog implementations (e.g., Glue → Iceberg REST)
+6. **Schema Evolution**: Boring, predictable column additions without breaking changes
+
+### Schema Evolution Pattern
+
+**For Gold Delta Lake tables** (temporal versioning):
+- Jobs use `mergeSchema=true` (write operations) + `spark.databricks.delta.schema.autoMerge.enabled=true` (MERGE operations)
+- Crawlers use `schemaChangePolicy: { updateBehavior: 'UPDATE_IN_DATABASE', deleteBehavior: 'DEPRECATE_IN_DATABASE' }`
+- **Rule**: Add new nullable columns only; never drop/rename columns in place
+- **Result**: Schema evolution becomes routine, not a production incident
+
+See Gold layer README files for schema evolution test validation (Run 5).
+
+### Anti-Patterns to Avoid
+
+❌ **Job-driven catalog management**:
+```python
+# DON'T DO THIS
+import boto3
+glue = boto3.client("glue")
+glue.start_crawler(Name="my-crawler")  # Job shouldn't know about crawlers
+```
+
+❌ **Mixed responsibilities**:
+```python
+# DON'T DO THIS
+if table_exists(database, table):
+    df.write.mode("overwrite").parquet(path)
+else:
+    create_table(database, table)  # Orchestration's job, not data engineering
+```
+
+❌ **Passing crawler names to jobs**:
+```javascript
+// DON'T DO THIS (in CDK)
+'--crawler_name': 'my-crawler'  // Job shouldn't know infrastructure names
+```
+
+### Migration Path
+
+If you have jobs with Glue API calls:
+1. Remove all `boto3.client("glue")` usage from job code
+2. Ensure CDK creates crawlers with proper schema change policies
+3. Verify Step Functions orchestration checks tables and runs crawlers
+4. Test: Job → Check tables Lambda → Crawler → Verify catalog
+
+### Delta Lake Gold Tables
+
+For Gold tables using Delta Lake, use Glue Crawlers with schema change policies (see `DELTA_TABLE_REGISTRATION.md`). Modern Glue Crawlers properly detect Delta format and support automatic schema evolution.
+
+**Historical Note**: Earlier implementations used `AwsCustomResource` (Lambda-backed), which is now deprecated. The current pattern uses `glue.CfnCrawler` with `UPDATE_IN_DATABASE` / `DEPRECATE_IN_DATABASE` policies.
+
 ## Architecture
 ```
 EventBridge → Glue Job → S3 (raw/bronze/gold) → Crawler → Athena
@@ -111,6 +259,30 @@ factory.createDatasetInfrastructure({
 - Schema defined in `config.json` (column mappings, types)
 - Supports single and multi-table datasets
 - Examples: `fda-nsde`, `fda-cder`
+
+**📋 Reference Implementation: FDA NSDE**
+
+`infra/etl/datasets/bronze/fda-nsde/` is the **canonical Pattern A implementation**.
+
+This is the "blessed" bronze pattern. New HTTP/ZIP datasets should copy this structure:
+
+**What makes it canonical:**
+- ✅ Uses `EtlStackFactory` (no custom stack code)
+- ✅ Uses shared `bronze_http_job.py` (no custom job code)
+- ✅ **Zero Glue API calls** in job code (pure data-plane)
+- ✅ Catalog entirely crawler-owned (orchestration-driven table registration)
+- ✅ Clean separation: data-plane (job) vs control-plane (orchestration)
+
+**What to copy:**
+1. Stack structure: `FdaNsdeStack.js` with factory pattern
+2. Config structure: `config.json` with schema definitions
+3. Orchestration: Step Functions handles "job → check-tables → start-crawlers"
+4. Job behavior: Writes to S3, prints completion, delegates catalog to orchestration
+
+**When to use Pattern B instead:**
+- Non-CSV formats (RRF, JSON, binary)
+- Authentication requirements (API keys, UMLS, OAuth)
+- Complex transformations beyond column mapping
 
 **Pattern B: Custom Bronze Jobs (Specialized Sources)**
 Use for datasets with unique formats, authentication, or processing requirements:
@@ -311,73 +483,83 @@ defaultArguments: {
 }
 ```
 
-#### 2. Delta Table Registration (Pure IaC Pattern)
+#### 2. Delta Table Registration (Glue Crawler Pattern)
 
-**🚫 DO NOT USE GLUE CRAWLERS for Delta Lake tables**
+**✅ USE GLUE CRAWLERS with schema change policies for Delta Lake tables**
 
-Crawlers incorrectly register Delta tables as `classification=parquet` instead of native Delta tables.
+Modern Glue Crawlers properly detect Delta Lake format and support automatic schema evolution.
 
-**✅ USE `glue.CfnTable` - Pure CDK declarative resource (Production Pattern):**
+**Historical Note**: Earlier implementations used `AwsCustomResource` (Lambda-backed custom resource), which added procedural complexity and IAM overhead. This pattern is now deprecated.
+
+**Production Pattern: `glue.CfnCrawler` with Schema Change Policies:**
 
 ```javascript
 const cdk = require("aws-cdk-lib");
 const glue = require("aws-cdk-lib/aws-glue");
 
-// Gold table name (hyphens → underscores for Glue)
-const goldTableName = dataset.replace(/-/g, '_');
+// Build paths using convention
 const goldBasePath = `s3://${bucketName}/gold/${dataset}/`;
 
-// Defensive validation for S3 path
-if (!goldBasePath.startsWith('s3://')) {
-  throw new Error(`goldBasePath must be an S3 URI, got: ${goldBasePath}`);
-}
-
-// Register Delta Lake table using first-class CloudFormation resource
-const goldTable = new glue.CfnTable(this, 'GoldTable', {
+// Create Glue Crawler for Delta Lake table discovery
+const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
+  name: `${etlConfig.etl_resource_prefix}-gold-crawler-${dataset}`,
+  description: `Crawler for GOLD ${dataset} Delta Lake table`,
+  role: glueRole.roleArn,
   databaseName: goldDatabase,
-  catalogId: this.account,  // Resolves at deploy-time for multi-account compatibility
-  tableInput: {
-    name: goldTableName,
-    description: `Gold layer Delta table for ${dataset} with SCD Type 2 temporal versioning`,
-    tableType: 'EXTERNAL_TABLE',
 
-    // CRITICAL: These parameters enable Athena Engine v3 native Delta reads
-    parameters: {
-      'classification': 'delta',
-      'table_type': 'DELTA',
-      'EXTERNAL': 'TRUE',
-      'external': 'TRUE'  // Duplicate for AWS normalization across regions
-    },
+  // Target S3 path where Delta Lake data is written
+  targets: {
+    s3Targets: [{
+      path: goldBasePath
+    }]
+  },
 
-    // Storage descriptor with correct Parquet I/O formats for Delta
-    // Schema Evolution: spark.databricks.delta.schema.autoMerge.enabled = true
-    storageDescriptor: {
-      location: goldBasePath,
-      inputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
-      outputFormat: 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
-      serdeInfo: {
-        serializationLibrary: 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
-      }
-      // columns array omitted - Delta manages schema via transaction log
+  // CRITICAL: Schema change policies enable automatic evolution
+  schemaChangePolicy: {
+    updateBehavior: 'UPDATE_IN_DATABASE',      // Add new columns
+    deleteBehavior: 'DEPRECATE_IN_DATABASE'    // Mark removed columns
+  },
+
+  // Crawler configuration for Delta Lake
+  configuration: JSON.stringify({
+    Version: 1.0,
+    CrawlerOutput: {
+      Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
+      Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
     }
+  }),
+
+  // On-demand only (invoked by Step Functions)
+  schedule: {
+    scheduleExpression: ''  // Empty = no schedule
   }
 });
 
-// Explicit dependencies to prevent race conditions
-goldTable.node.addDependency(goldJob);
-goldTable.node.addDependency(dataWarehouseBucket);
+// Crawler depends on bucket (not job - they're peers)
+goldCrawler.node.addDependency(dataWarehouseBucket);
+
+// Export for Step Functions orchestration
+this.goldCrawler = goldCrawler;
 ```
 
-**Production Hardening:**
-- ✅ `glue.CfnTable` - Pure CloudFormation (NOT Lambda-backed)
-- ✅ `this.account` - Deploy-time resolution (multi-account safe)
-- ✅ Dual `EXTERNAL`/`external` - AWS region normalization
-- ✅ S3 URI validation - Catches config errors at synth time
-- ✅ Explicit dependencies - Prevents race conditions
-- ✅ No columns array - Delta manages schema automatically
-- ✅ Fully declarative - No procedural logic, no IAM complexity
+**Step Functions Orchestration** (control-plane, NOT data-plane):
 
-**See `DELTA_TABLE_REGISTRATION.md` for complete architectural decision record.**
+Jobs write data to S3. Step Functions orchestrates catalog registration:
+1. Run Glue job (writes Delta data to S3)
+2. Check-tables Lambda (verifies if table exists)
+3. Start-crawlers Lambda (invokes crawler if needed)
+4. Wait for crawler completion
+
+**Production Benefits:**
+- ✅ Pure CloudFormation (no Lambda-backed custom resources)
+- ✅ Automatic Delta format detection from `_delta_log/`
+- ✅ Schema evolution via `UPDATE_IN_DATABASE` / `DEPRECATE_IN_DATABASE`
+- ✅ Separation of concerns (jobs write data, orchestration manages catalog)
+- ✅ Zero job-level Glue API calls (`boto3.client("glue")`)
+- ✅ Consistent with Bronze/Silver layers (same pattern everywhere)
+- ✅ Fully declarative infrastructure
+
+**See `DELTA_TABLE_REGISTRATION.md` for complete architectural decision record and alternative patterns (CfnTable).**
 
 ### Python Job Configuration (gold_job.py)
 
@@ -414,8 +596,8 @@ spark.conf.set(...)  # TOO LATE! Causes "Cannot modify static config" error
 | `Cannot modify the value of a static config` | Setting config after SparkContext | Use `SparkConf` before `SparkContext()` |
 | `Invalid input to --conf` | Using `--conf` in CDK arguments | Remove `--conf`, use Python `SparkConf` instead |
 | `Delta operation requires SparkSession to be configured` | Missing Spark extensions/catalog | Set via `SparkConf` in Python before context creation |
-| Athena returns 0 rows despite data in S3 | Crawler registered table as `classification=parquet` | Use AwsCustomResource pattern (see above) |
-| `TABLE_OR_VIEW_NOT_FOUND` | Table not registered in Glue catalog | Deploy CDK stack with AwsCustomResource |
+| Athena returns 0 rows despite data in S3 | Table not registered or wrong metadata | Run crawler via Step Functions orchestration |
+| `TABLE_OR_VIEW_NOT_FOUND` | Table not registered in Glue catalog | Deploy CDK stack with Crawler, run orchestration |
 
 ### Stack Dependencies
 
