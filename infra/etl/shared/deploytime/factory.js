@@ -129,7 +129,13 @@ class EtlStackFactory {
       role: this.glueRole.roleArn,
       databaseName: resourceNames.goldDatabase,
       targets: { s3Targets: [{ path: paths.gold }] },
-      configuration: crawlerConfig
+      configuration: crawlerConfig,
+
+      // Schema change policies (consistent pattern across all layers)
+      schemaChangePolicy: {
+        updateBehavior: 'UPDATE_IN_DATABASE',
+        deleteBehavior: 'DEPRECATE_IN_DATABASE'
+      }
     });
   }
 
@@ -174,16 +180,26 @@ class EtlStackFactory {
 
   /**
    * Deploy Glue scripts to S3 (for custom scripts)
+   *
+   * NOTE: This method is deprecated. Stacks should deploy their own glue scripts
+   * using the glueScriptPath(__dirname) helper from shared/deploytime/paths.js
+   *
+   * @deprecated Use glueScriptPath(__dirname) in individual stacks instead
    */
-  deployGlueScripts(dataset, scriptFiles = []) {
-    const s3 = require("aws-cdk-lib/aws-s3");
+  deployGlueScripts(dataset, layer, scriptFiles = []) {
     const s3Deploy = require("aws-cdk-lib/aws-s3-deployment");
-    const path = require("path");
+    const paths = require("./paths");
 
     if (!scriptFiles.length) return;
 
+    if (!layer) {
+      throw new Error("deployGlueScripts requires 'layer' parameter (bronze/silver/gold)");
+    }
+
+    // NOTE: This assumes the factory is being called from a stack at datasets/{layer}/{dataset}/
+    // For most use cases, stacks should use glueScriptPath(__dirname) directly instead of this method
     const deploymentSource = s3Deploy.Source.asset(
-      path.join(__dirname, "..", "..", "datasets", dataset, "glue")
+      paths.datasetGluePath(layer, dataset)
     );
 
     return new s3Deploy.BucketDeployment(this.stack, "GlueScriptDeployment", {

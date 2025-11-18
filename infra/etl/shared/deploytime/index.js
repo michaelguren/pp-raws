@@ -369,7 +369,13 @@ class EtlDeployUtils {
         role: glueRole.roleArn,
         databaseName: resourceNames.bronzeDatabase,
         targets: { s3Targets: [{ path: paths.bronze }] },
-        configuration: crawlerConfig
+        configuration: crawlerConfig,
+
+        // Schema change policies (consistent with Gold layer pattern)
+        schemaChangePolicy: {
+          updateBehavior: 'UPDATE_IN_DATABASE',
+          deleteBehavior: 'DEPRECATE_IN_DATABASE'
+        }
       });
 
       outputs.BronzeCrawlerName = new cdk.CfnOutput(scope, "BronzeCrawlerName", {
@@ -392,7 +398,13 @@ class EtlDeployUtils {
           role: glueRole.roleArn,
           databaseName: resourceNames.bronzeDatabase,
           targets: { s3Targets: [{ path: paths.bronzeTables[tableName] }] },
-          configuration: crawlerConfig
+          configuration: crawlerConfig,
+
+          // Schema change policies (consistent with Gold layer pattern)
+          schemaChangePolicy: {
+            updateBehavior: 'UPDATE_IN_DATABASE',
+            deleteBehavior: 'DEPRECATE_IN_DATABASE'
+          }
         });
 
         outputs[outputKey] = new cdk.CfnOutput(scope, outputKey, {

@@ -1,8 +1,8 @@
 const cdk = require("aws-cdk-lib");
 const glue = require("aws-cdk-lib/aws-glue");
 const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
-const path = require("path");
 const deployUtils = require("../../../shared/deploytime");
+const { glueScriptPath } = require("../../../shared/deploytime/paths");
 
 /**
  * RxClass ETL Stack - Pattern B (Custom API Source)
@@ -31,7 +31,7 @@ class RxClassStack extends cdk.Stack {
 
     // Deploy custom Glue script to S3 (Pattern B: custom bronze job for API collection)
     new s3deploy.BucketDeployment(this, "GlueScripts", {
-      sources: [s3deploy.Source.asset(path.join(__dirname, "glue"))],
+      sources: [s3deploy.Source.asset(glueScriptPath(__dirname))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: `etl/datasets/${dataset}/glue/`,
     });
@@ -83,7 +83,13 @@ class RxClassStack extends cdk.Stack {
           Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
           Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
         }
-      })
+      }),
+
+      // Schema change policies (consistent pattern across all layers)
+      schemaChangePolicy: {
+        updateBehavior: 'UPDATE_IN_DATABASE',
+        deleteBehavior: 'DEPRECATE_IN_DATABASE'
+      }
     });
 
     // Outputs

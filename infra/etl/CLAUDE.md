@@ -10,6 +10,122 @@
 
 ---
 
+## ⚠️ CRITICAL RULE: Filesystem Paths = Deploy-Time Only
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║  Filesystem paths (e.g., __dirname, path.join) are DEPLOY-TIME ONLY.       ║
+║                                                                              ║
+║  ❌ Runtime code (Glue jobs, Lambda handlers) must NEVER compute            ║
+║     filesystem paths. They work exclusively with S3 URIs and /tmp.          ║
+║                                                                              ║
+║  ✅ CDK stacks use centralized path helper at:                              ║
+║     infra/etl/shared/deploytime/paths.js                                    ║
+║                                                                              ║
+║  This separation keeps jobs portable and prevents mixing control-plane      ║
+║  and data-plane concerns.                                                   ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
+**Deploy-Time Path Usage (CDK Stacks):**
+```javascript
+// Import the centralized paths helper
+const { glueScriptPath, sharedRuntimePath } = require('../../../shared/deploytime/paths');
+
+// ✅ CORRECT - Use helper functions
+new s3deploy.BucketDeployment(this, 'DeployGlueScript', {
+  sources: [s3deploy.Source.asset(glueScriptPath(__dirname))],
+  destinationBucket: dataWarehouseBucket,
+  destinationKeyPrefix: `etl/${dataset}/glue/`
+});
+
+new s3deploy.BucketDeployment(this, 'DeployTemporalLib', {
+  sources: [s3deploy.Source.asset(sharedRuntimePath(__dirname, 'temporal'))],
+  destinationBucket: dataWarehouseBucket,
+  destinationKeyPrefix: 'etl/shared/runtime/temporal/'
+});
+
+// ❌ INCORRECT - No raw path.join in stacks
+const scriptPath = path.join(__dirname, 'glue');  // DON'T DO THIS
+const sharedLib = path.join(__dirname, '../../../shared/runtime/temporal');  // DON'T DO THIS
+```
+
+**Runtime Path Usage (Glue Jobs):**
+```python
+# ✅ CORRECT - Work with S3 URIs only
+silver_df = glueContext.create_dynamic_frame.from_catalog(
+    database=args['silver_database'],
+    table_name=args['silver_table']
+).toDF()
+
+df.write.mode("overwrite").parquet(args['gold_base_path'])  # S3 URI passed from CDK
+
+# ✅ CORRECT - Use /tmp for temporary files
+with open('/tmp/temp_file.csv', 'w') as f:
+    f.write(data)
+
+# ❌ INCORRECT - Never compute filesystem paths
+import os
+script_dir = os.path.dirname(__file__)  # DON'T DO THIS in runtime code
+```
+
+**Available Path Helpers:**
+
+| Helper Function | Use Case | Example |
+|----------------|----------|---------|
+| `glueScriptPath(__dirname)` | Dataset-local `glue/` directory | Returns `{stackDir}/glue` |
+| `sharedRuntimePath(__dirname, 'temporal')` | Shared runtime libraries | Returns path to `infra/etl/shared/runtime/temporal` |
+| `rootSharedRuntimePath(__dirname)` | From EtlCoreStack (root level) | Returns `{etlRoot}/shared/runtime` |
+| `sharedLambdaPath(__dirname)` | Orchestration Lambda functions | Returns path to `orchestrations/shared/lambdas` |
+
+**Benefits:**
+- **Single source of truth**: Directory refactors require changing only one file
+- **Clear separation**: Deploy-time vs runtime concerns never mix
+- **Portable jobs**: Runtime code works anywhere (local Spark, EMR, Glue)
+- **Readable stacks**: Intent is clear from helper function names
+
+---
+
+## 📋 Canonical Reference: The FDA Pipeline (NSDE → CDER → fda-all-ndcs)
+
+**When building new ETL pipelines, start by copying the FDA pipeline structure.**
+
+This is the **reference implementation** demonstrating the complete RAWS pattern:
+
+**Bronze Layer** (Pattern A):
+- `datasets/bronze/fda-nsde/` - Factory-based HTTP/ZIP ingestion
+- `datasets/bronze/fda-cder/` - Factory-based HTTP/ZIP ingestion
+- Shared `bronze_http_job.py` runtime, zero Glue API calls
+
+**Silver Layer** (Custom):
+- `datasets/silver/fda-all-ndcs/` - INNER JOIN of NSDE + CDER
+- Custom transformation logic, zero Glue API calls
+- Demonstrates multi-source data lineage
+
+**Gold Layer** (Temporal + Delta):
+- `datasets/gold/fda-all-ndcs/` - **Delta Lake with Glue Crawler**
+- Temporal versioning (SCD Type 2) via shared library
+- Delta Lake 3.0 (`--datalake-formats=delta`)
+- Automatic schema evolution via Crawler + `mergeSchema=true`
+- Zero Glue API calls, pure data-plane
+
+**Why This Pipeline Is The Reference:**
+1. ✅ Complete Bronze → Silver → Gold medallion flow
+2. ✅ Both factory pattern (Bronze) and custom stacks (Silver/Gold)
+3. ✅ Multi-source joins with data quality (INNER JOIN only)
+4. ✅ Temporal versioning for incremental DynamoDB sync
+5. ✅ Delta Lake ACID transactions and schema evolution
+6. ✅ Zero crawler coupling - Step Functions owns orchestration
+7. ✅ Centralized paths helper for deploy-time filesystem access
+
+**For new pipelines:** Copy the FDA structure, swap out the data sources and transformation logic, keep the architectural patterns.
+
+**See also:** `DELTA_TABLE_REGISTRATION.md` for Delta Lake implementation details.
+
+---
+
 ## ⚠️ HARD RULE: Jobs Never Touch Glue Catalog
 
 ```
@@ -156,6 +272,8 @@ For Gold tables using Delta Lake, use Glue Crawlers with schema change policies 
 
 **Historical Note**: Earlier implementations used `AwsCustomResource` (Lambda-backed), which is now deprecated. The current pattern uses `glue.CfnCrawler` with `UPDATE_IN_DATABASE` / `DEPRECATE_IN_DATABASE` policies.
 
+**Maintenance Operations**: Delta Lake tables require periodic OPTIMIZE, ZORDER BY, and VACUUM operations. See [Delta Lake Maintenance Strategy](DELTA_TABLE_REGISTRATION.md#delta-lake-maintenance-strategy) for implementation guidance, retention policies, and automation roadmap.
+
 ## Architecture
 ```
 EventBridge → Glue Job → S3 (raw/bronze/gold) → Crawler → Athena
@@ -263,6 +381,8 @@ factory.createDatasetInfrastructure({
 **📋 Reference Implementation: FDA NSDE**
 
 `infra/etl/datasets/bronze/fda-nsde/` is the **canonical Pattern A implementation**.
+
+**Part of the FDA Pipeline**: NSDE + CDER → fda-all-ndcs (see canonical reference at top of this document)
 
 This is the "blessed" bronze pattern. New HTTP/ZIP datasets should copy this structure:
 

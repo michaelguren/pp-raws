@@ -4,7 +4,7 @@ const iam = require("aws-cdk-lib/aws-iam");
 const stepfunctions = require("aws-cdk-lib/aws-stepfunctions");
 const events = require("aws-cdk-lib/aws-events");
 const targets = require("aws-cdk-lib/aws-events-targets");
-const path = require("path");
+const { sharedLambdaPath } = require("../../../shared/deploytime/paths");
 
 /**
  * Daily FDA Orchestration Stack
@@ -113,7 +113,7 @@ class DailyFdaOrchestrationStack extends cdk.Stack {
       functionName: "pp-dw-daily-fda-check-tables",
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: "check-tables.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "..", "shared", "lambdas")),
+      code: lambda.Code.fromAsset(sharedLambdaPath(__dirname)),
       timeout: cdk.Duration.seconds(60),
       memorySize: 256,
       role: checkTablesLambdaRole,
@@ -123,7 +123,7 @@ class DailyFdaOrchestrationStack extends cdk.Stack {
       functionName: "pp-dw-daily-fda-start-crawlers",
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: "start-crawlers.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "..", "shared", "lambdas")),
+      code: lambda.Code.fromAsset(sharedLambdaPath(__dirname)),
       timeout: cdk.Duration.seconds(60),
       memorySize: 256,
       role: startCrawlersLambdaRole,

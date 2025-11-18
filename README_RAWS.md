@@ -48,8 +48,11 @@ Every choice — schema, service, search — should maximize clarity, not comple
 
 ### 2.5 Infrastructure as Convention
 
-Infra lives with code, versioned, testable, and explainable.  
+Infra lives with code, versioned, testable, and explainable.
 AWS CDK is our compiler. Each RAWS domain maps predictably to infrastructure resources and API routes.
+
+**Deploy-Time vs. Runtime Separation:**
+CDK stacks use a centralized path helper (`infra/etl/shared/deploytime/paths.js`) for all filesystem path computations during deployment. Runtime code (Glue jobs, Lambda handlers) never computes filesystem paths — they operate purely on S3 URIs and `/tmp`. This separation keeps jobs portable and prevents mixing control-plane and data-plane concerns.
 
 ### 2.6 AI-Augmented Development
 

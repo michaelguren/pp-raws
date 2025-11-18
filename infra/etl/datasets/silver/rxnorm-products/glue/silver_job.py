@@ -31,8 +31,7 @@ args = getResolvedOptions(sys.argv, [
     'rxnrel_table',
     'rxnsat_table',
     'output_table',
-    'compression_codec',
-    'crawler_name'
+    'compression_codec'
 ])
 
 # Initialize Glue context
@@ -694,12 +693,8 @@ final_df.write \
 
 print("Silver table written successfully")
 
-# ============================================================================
-# STEP 12: Run Crawler to Update Glue Catalog
-# ============================================================================
-
-print(f"Note: Run crawler manually when needed: {args['crawler_name']}")
-print("Command: aws glue start-crawler --name " + args['crawler_name'])
+# Table registration in Glue catalog handled by Step Functions orchestration
+# (check-tables Lambda → start-crawlers Lambda → 30s wait)
 
 # ============================================================================
 # Complete Job

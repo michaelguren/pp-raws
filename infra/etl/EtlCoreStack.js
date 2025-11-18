@@ -3,7 +3,7 @@ const s3 = require("aws-cdk-lib/aws-s3");
 const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
 const glue = require("aws-cdk-lib/aws-glue");
 const iam = require("aws-cdk-lib/aws-iam");
-const path = require("path");
+const { rootSharedRuntimePath } = require("./shared/deploytime/paths");
 
 class EtlCoreStack extends cdk.Stack {
   constructor(scope, id, props) {
@@ -26,10 +26,17 @@ class EtlCoreStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       lifecycleRules: [
         {
+          // Safe to expire: Temporary processing files only
           id: "temp-cleanup",
           prefix: "temp/",
           expiration: cdk.Duration.days(7),
         },
+        // ⚠️ CRITICAL: NEVER add lifecycle rules for the following prefixes:
+        //   - gold/* (Delta Lake tables - needed for time travel)
+        //   - */_delta_log/* (Delta transaction logs - required for ACID + versioning)
+        //   - silver/* (transformed data - referenced by gold layer)
+        //   - bronze/* (source of truth for lineage)
+        // Only expire raw/* or temp/* prefixes if storage costs become an issue.
       ],
     });
 
@@ -48,7 +55,7 @@ class EtlCoreStack extends cdk.Stack {
 
     // Deploy shared runtime utilities (used by all datasets)
     new s3deploy.BucketDeployment(this, "RuntimeUtils", {
-      sources: [s3deploy.Source.asset(path.join(__dirname, "shared/runtime"))],
+      sources: [s3deploy.Source.asset(rootSharedRuntimePath(__dirname))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: "etl/shared/runtime/",
     });

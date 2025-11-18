@@ -2,8 +2,8 @@ const cdk = require("aws-cdk-lib");
 const glue = require("aws-cdk-lib/aws-glue");
 const iam = require("aws-cdk-lib/aws-iam");
 const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
-const path = require("path");
 const etlUtils = require("../../../shared/deploytime");
+const { glueScriptPath } = require("../../../shared/deploytime/paths");
 
 /**
  * RxNORM ETL Stack - Custom implementation (not using factory)
@@ -56,7 +56,7 @@ class RxnormStack extends cdk.Stack {
 
     // Deploy Glue scripts to S3
     new s3deploy.BucketDeployment(this, "GlueScripts", {
-      sources: [s3deploy.Source.asset(path.join(__dirname, "glue"))],
+      sources: [s3deploy.Source.asset(glueScriptPath(__dirname))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: `etl/${dataset}/glue/`,
     });

@@ -3,8 +3,9 @@
 **⚠️ NOTE: This document has been superseded by the production-hardened pattern in `DELTA_TABLE_REGISTRATION.md`**
 
 The canonical RAWS pattern for Delta Lake (Glue 5.0 + Athena v3) is now:
-- Pure CloudFormation via `glue.CfnTable` (not custom resources)
-- Production-hardened with multi-account safety, region normalization, and defensive validation
+- **Glue Crawlers with schema change policies** (automatic Delta format detection + schema evolution)
+- Pure CloudFormation via `glue.CfnCrawler` (not AwsCustomResource or manual CfnTable)
+- Production-hardened with automatic catalog management via Step Functions orchestration
 - See `fda-all-ndcs` stack for reference implementation
 
 ---
@@ -21,7 +22,7 @@ No migration is required — assume no prior data exists.
 - Gold layer follows SCD Type 2 temporal versioning
 - All datasets (FDA, RxNorm, etc.) follow same schema conventions
 - Architecture pattern: bronze → silver → gold (Delta)
-- **Table Registration**: Pure IaC via `glue.CfnTable` (see `DELTA_TABLE_REGISTRATION.md`)
+- **Table Registration**: Glue Crawlers with schema change policies (see `DELTA_TABLE_REGISTRATION.md`)
 
 # Claude Code: Implementation Tasks
 

@@ -288,6 +288,10 @@ Queryable via Athena
 
 ## Maintenance
 
+**Delta Lake Operations**: For OPTIMIZE, ZORDER BY, and VACUUM strategies, see [Delta Lake Maintenance Strategy](../../DELTA_TABLE_REGISTRATION.md#delta-lake-maintenance-strategy).
+
+---
+
 ### Validate Temporal Integrity
 
 Run validation queries periodically to ensure data quality:

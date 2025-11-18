@@ -278,14 +278,202 @@ SELECT COUNT(*) FROM pp_dw_gold.fda_all_ndcs WHERE status = 'current';
 - ✅ Consistent with Bronze/Silver layers (same pattern everywhere)
 - ✅ Separation of concerns (data-plane vs control-plane)
 
-## Status
+---
 
-- **Implemented**: `fda-all-ndcs` (Crawler pattern - 2025-11-16)
-- **Pending**: `rxnorm-products`, `rxnorm-ndc-mappings`, `drug-product-codesets`
+## Delta Lake Maintenance Strategy
+
+**Status**: 📋 Not Yet Implemented (Future Enhancement)
+
+Delta Lake tables require periodic maintenance operations to optimize query performance and manage storage costs. These operations should be run outside of the main ETL pipeline.
+
+### Required Operations
+
+#### 1. OPTIMIZE (File Compaction)
+
+**Purpose**: Combine small files into larger ones to improve query performance.
+
+**When to run**:
+- After significant data changes (>1000 small files)
+- Monthly maintenance window
+- When query performance degrades
+
+**Implementation** (future Lambda or Glue maintenance job):
+```python
+from delta.tables import DeltaTable
+
+delta_table = DeltaTable.forPath(spark, "s3://pp-dw-{account}/gold/fda-all-ndcs/")
+delta_table.optimize().executeCompaction()
+```
+
+**Expected benefit**: 2-5x faster queries by reducing file open overhead
 
 ---
 
-**Decision Date**: 2025-11-16 (Updated from 2025-10-25)
+#### 2. ZORDER BY (Read Optimization)
+
+**Purpose**: Co-locate related data to minimize data scanned during queries.
+
+**When to run**:
+- After OPTIMIZE (requires compacted files)
+- Monthly maintenance window
+- When query patterns stabilize
+
+**Implementation**:
+```python
+# For gold tables with temporal versioning
+delta_table.optimize().executeZOrderBy("ndc_11")  # Business key
+
+# For tables with common filter columns
+delta_table.optimize().executeZOrderBy("status", "run_date")
+```
+
+**Expected benefit**: 30-70% reduction in data scanned for filtered queries
+
+**Column selection strategy**:
+- **fda-all-ndcs**: `ndc_11` (primary key for point lookups)
+- **rxnorm-products**: `rxcui` (primary key)
+- **rxnorm-ndc-mappings**: `ndc_11`, `rxcui` (composite key)
+- **rxnorm-product-classifications**: `rxcui`, `class_id` (composite key)
+
+---
+
+#### 3. VACUUM (Remove Old Files)
+
+**Purpose**: Permanently delete files that are no longer referenced by any Delta table version.
+
+**⚠️ CRITICAL**: VACUUM removes historical data. Time travel queries beyond the retention period will fail.
+
+**When to run**:
+- After determining appropriate retention period
+- Monthly maintenance window
+- When S3 storage costs become significant
+
+**Implementation**:
+```python
+# Default: Remove files older than 7 days (Delta default retention)
+delta_table.vacuum()
+
+# Custom retention: 168 hours = 7 days
+delta_table.vacuum(168)
+
+# Longer retention for audit/compliance (30 days)
+delta_table.vacuum(720)
+```
+
+**Retention recommendations**:
+- **Development**: 7 days (default)
+- **Production**: 30-90 days (balance time travel vs storage cost)
+- **Compliance/Audit**: 365+ days (if required by regulations)
+
+**Cost calculation**:
+```
+Storage per version ≈ (% of data changed) × (table size)
+Example: 0.2% daily change × 100 MB table × 30 days ≈ 6 MB historical versions
+At $0.023/GB/month → ~$0.14/month/table for 30-day retention
+```
+
+---
+
+### Automation Strategy (Future)
+
+#### Phase 1: Manual Operations (Current)
+Run maintenance commands via ad-hoc Glue notebooks or local Spark.
+
+#### Phase 2: Scheduled Glue Jobs (Next)
+Create dedicated maintenance jobs:
+- `pp-dw-maintenance-optimize-gold` (weekly)
+- `pp-dw-maintenance-vacuum-gold` (monthly)
+- EventBridge rules for scheduling
+
+#### Phase 3: Intelligent Automation (Future)
+Lambda function that:
+1. Monitors Delta table metrics (file count, query performance)
+2. Triggers OPTIMIZE when file count > threshold
+3. Triggers VACUUM based on retention policy
+4. Sends SNS alerts on completion/failure
+
+**Metrics to monitor** (via CloudWatch):
+- Number of files per table (trigger: >1000)
+- Average file size (trigger: <10 MB)
+- Query execution time trends (trigger: >2x baseline)
+- S3 storage costs per table
+
+---
+
+### Implementation Checklist
+
+When implementing maintenance operations:
+
+- [ ] Create `infra/etl/maintenance/` directory
+- [ ] Write maintenance Glue job(s) with OPTIMIZE/VACUUM logic
+- [ ] Add CloudWatch alarms for file count thresholds
+- [ ] Define retention policies per environment (dev/prod)
+- [ ] Document runbook for manual maintenance
+- [ ] Add EventBridge schedules for automation
+- [ ] Test VACUUM retention periods in dev environment
+- [ ] Validate time travel works within retention window
+
+---
+
+### References
+
+- [Delta Lake OPTIMIZE documentation](https://docs.delta.io/latest/optimizations-oss.html)
+- [Delta Lake VACUUM documentation](https://docs.delta.io/latest/delta-utility.html#vacuum)
+- [ZORDER BY best practices](https://docs.delta.io/latest/optimizations-oss.html#z-ordering-multi-dimensional-clustering)
+
+---
+
+## Status
+
+✅ **All GOLD stacks now use Crawler pattern (2025-11-17)**
+
+- `fda-all-ndcs` - **Delta Lake** with Crawler (temporal versioning)
+- `rxnorm-products` - **Parquet** with Crawler (temporal versioning)
+- `rxnorm-ndc-mappings` - **Parquet** with Crawler (temporal versioning)
+- `rxnorm-product-classifications` - **Parquet** with Crawler (temporal versioning)
+- `drugs-sync` - DynamoDB sync (no crawler needed)
+
+**Note**: Only `fda-all-ndcs` uses Delta Lake format currently. Other gold tables use Parquet with temporal versioning. All use Glue Crawlers for catalog registration (same pattern, different storage format).
+
+---
+
+## 📋 Canonical Reference: The FDA Pipeline
+
+**NSDE → CDER → fda-all-ndcs** is the **reference implementation** for the complete RAWS ETL pattern:
+
+**Bronze Layer** (Pattern A - Factory-based):
+- `datasets/bronze/fda-nsde/FdaNsdeStack.js` - HTTP/ZIP ingestion via factory
+- `datasets/bronze/fda-cder/FdaCderStack.js` - HTTP/ZIP ingestion via factory
+- Uses shared `bronze_http_job.py` runtime
+- Zero Glue API calls, pure data-plane
+
+**Silver Layer** (Custom transformation):
+- `datasets/silver/fda-all-ndcs/FdaAllNdcsStack.js` - Joins NSDE + CDER
+- Custom `silver_job.py` with INNER JOIN logic
+- Zero Glue API calls, pure data-plane
+
+**Gold Layer** (Temporal versioning + Delta Lake):
+- `datasets/gold/fda-all-ndcs/GoldFdaAllNdcsStack.js` - **Delta Lake with Crawler**
+- Uses `temporal_versioning_delta.py` shared library
+- Delta Lake 3.0 via Glue 5.0 (`--datalake-formats=delta`)
+- Glue Crawler for automatic table registration
+- Zero Glue API calls, pure data-plane
+
+**Why This Pipeline Is Canonical:**
+1. ✅ Complete Bronze → Silver → Gold flow
+2. ✅ Demonstrates both factory pattern (Bronze) and custom stacks (Silver/Gold)
+3. ✅ Shows data lineage across multiple sources (NSDE + CDER)
+4. ✅ Implements temporal versioning (SCD Type 2) for incremental sync
+5. ✅ Uses Delta Lake for ACID transactions and schema evolution
+6. ✅ Zero crawler coupling - all jobs are pure data-plane
+7. ✅ Step Functions orchestration handles all control-plane concerns
+8. ✅ Deploy-time paths use centralized `paths.js` helper
+
+**When building new pipelines, copy the FDA pipeline structure first.**
+
+---
+
+**Decision Date**: 2025-11-17 (Updated from 2025-10-25)
 **Author**: RAWS Architecture Team
-**Status**: Accepted (Crawler Pattern)
+**Status**: ✅ Accepted & Implemented (Crawler Pattern)
 **Previous Patterns**: AwsCustomResource (deprecated 2025-11-16), CfnTable (alternative, not implemented)

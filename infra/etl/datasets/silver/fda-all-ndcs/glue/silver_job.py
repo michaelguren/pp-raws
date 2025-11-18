@@ -4,7 +4,6 @@ Creates unified fda_all_ndc table with INNER JOIN of both datasets
 Only includes NDCs present in both NSDE and CDER data
 """
 import sys
-import boto3  # type: ignore[import-not-found]
 from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]

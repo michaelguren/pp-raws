@@ -1,7 +1,7 @@
 const cdk = require("aws-cdk-lib");
 const glue = require("aws-cdk-lib/aws-glue");
 const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
-const path = require("path");
+const { glueScriptPath, sharedRuntimePath } = require("../../../shared/deploytime/paths");
 
 /**
  * FDA All NDCs Gold Layer Stack - Delta Lake Edition
@@ -58,7 +58,7 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
 
     // Deploy Glue script to S3
     const scriptDeployment = new s3deploy.BucketDeployment(this, 'DeployGlueScript', {
-      sources: [s3deploy.Source.asset(path.join(__dirname, 'glue'))],
+      sources: [s3deploy.Source.asset(glueScriptPath(__dirname))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: `etl/${dataset}/glue/`,
       retainOnDelete: false
@@ -66,7 +66,7 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
 
     // Deploy Delta Lake temporal versioning library to S3
     const temporalDeployment = new s3deploy.BucketDeployment(this, 'DeployTemporalLib', {
-      sources: [s3deploy.Source.asset(path.join(__dirname, '../../../shared/runtime/temporal'))],
+      sources: [s3deploy.Source.asset(sharedRuntimePath(__dirname, 'temporal'))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: 'etl/shared/runtime/temporal/',
       retainOnDelete: false,
@@ -143,7 +143,7 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     //
     // Runtime sequence: Deploy → Run job → Run crawler → Query Athena
     const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
-      name: `${etlConfig.etl_resource_prefix}-gold-crawler-${dataset}`,
+      name: `${etlConfig.etl_resource_prefix}-gold-${dataset}-crawler`,
       role: glueRole.roleArn,
       databaseName: goldDatabase,
       description: `Crawler for Delta Lake table ${goldTableName} in Gold layer`,
@@ -168,8 +168,9 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
       // TODO: Add EventBridge scheduling when needed
     }
 
-    // Export useful properties
+    // Export useful properties for orchestration and debugging
     this.goldJob = goldJob;
+    this.goldCrawler = goldCrawler;  // Orchestration can reference if needed
     this.goldPath = goldBasePath;
 
     // CloudFormation outputs

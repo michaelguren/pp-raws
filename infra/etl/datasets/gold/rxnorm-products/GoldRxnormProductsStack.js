@@ -1,7 +1,7 @@
 const cdk = require("aws-cdk-lib");
 const glue = require("aws-cdk-lib/aws-glue");
 const s3deploy = require("aws-cdk-lib/aws-s3-deployment");
-const path = require("path");
+const { glueScriptPath, sharedRuntimePath } = require("../../../shared/deploytime/paths");
 
 /**
  * RxNORM Products Gold Layer Stack
@@ -43,7 +43,7 @@ class GoldRxnormProductsStack extends cdk.Stack {
 
     // Deploy Glue script to S3
     new s3deploy.BucketDeployment(this, 'DeployGlueScript', {
-      sources: [s3deploy.Source.asset(path.join(__dirname, 'glue'))],
+      sources: [s3deploy.Source.asset(glueScriptPath(__dirname))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: `etl/${dataset}/glue/`,
       retainOnDelete: false
@@ -51,7 +51,7 @@ class GoldRxnormProductsStack extends cdk.Stack {
 
     // Deploy temporal versioning library to S3 (shared deployment)
     new s3deploy.BucketDeployment(this, 'DeployTemporalLib', {
-      sources: [s3deploy.Source.asset(path.join(__dirname, '../../../shared/runtime/temporal'))],
+      sources: [s3deploy.Source.asset(sharedRuntimePath(__dirname, 'temporal'))],
       destinationBucket: dataWarehouseBucket,
       destinationKeyPrefix: 'etl/shared/runtime/temporal/',
       retainOnDelete: false,
