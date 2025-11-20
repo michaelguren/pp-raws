@@ -125,6 +125,11 @@ class GoldRxnormProductsStack extends cdk.Stack {
         }]
       },
 
+      schemaChangePolicy: {
+        updateBehavior: 'UPDATE_IN_DATABASE',
+        deleteBehavior: 'DEPRECATE_IN_DATABASE'
+      },
+
       configuration: JSON.stringify({
         Version: 1.0,
         CrawlerOutput: {

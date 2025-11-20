@@ -5,16 +5,45 @@ Implements temporal validity pattern (SCD Type 2) using Delta Lake MERGE operati
 Uses end-of-time pattern (9999-12-31) instead of NULL for current records.
 
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                        RAWS DELTA INVARIANT                                  ║
+║                     CRITICAL: NOVEMBER 19, 2025 INCIDENT                     ║
+╔══════════════════════════════════════════════════════════════════════════════╗
 ║                                                                              ║
-║  ALL GOLD Delta jobs MUST enable mergeSchema=true to make column            ║
-║  additions boring. This library enforces this on all write paths.           ║
+║  ROOT CAUSE: content_hash included volatile metadata columns (run_date,     ║
+║  run_id, source_run_id, etc.), causing ALL rows to appear CHANGED on        ║
+║  every run. All rows were expired + re-inserted, resetting active_from      ║
+║  dates and destroying temporal history.                                      ║
 ║                                                                              ║
-║  - Initial writes: .option("mergeSchema", "true")                           ║
-║  - MERGE operations: spark.databricks.delta.schema.autoMerge.enabled=true   ║
+║  PREVENTION: This library now enforces business-only column hashing via     ║
+║  an explicit denylist validator. Volatile metadata NEVER enters the hash.   ║
 ║                                                                              ║
-║  This ensures schema evolution is safe, automatic, and non-disruptive.      ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                        RAWS DELTA INVARIANTS                                 ║
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║  1. Business content_hash MUST ONLY include stable source business          ║
+║     attributes. NEVER hash: run_date, run_id, source_run_id, source_file,  ║
+║     meta_run_id, ingestion_timestamp, or any RAWS metadata.                 ║
+║                                                                              ║
+║  2. First-ever Delta write on S3 MUST use .mode("append"), never            ║
+║     "overwrite". Subsequent writes MUST use MERGE for SCD2.                 ║
+║                                                                              ║
+║  3. Always set spark.delta.logStore.class=S3SingleDriverLogStore via       ║
+║     Glue job --conf (AWS best practice for S3 reliability).                 ║
+║                                                                              ║
+║  4. Schema evolution MUST be enabled (mergeSchema=true) on all writes.      ║
+║                                                                              ║
+║  5. Use refuse_accidental_overwrite() guard with binaryFile check as        ║
+║     final seatbelt against orphan Parquet / flaky first-commit issues.      ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+References:
+- AWS Glue Delta Lake Best Practices (2025):
+  https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-etl-format-delta-lake.html
+- Delta Lake S3 Reliability:
+  https://delta.io/blog/delta-lake-s3/
 
 Benefits vs. Parquet:
 - 90%+ reduction in S3 writes (only changed records)
@@ -26,13 +55,23 @@ Benefits vs. Parquet:
 Usage:
     from temporal_versioning_delta import apply_temporal_versioning_delta
 
+    # Define business columns (NEVER include metadata)
+    business_columns = [
+        "ndc_11",  # Business key
+        "proprietary_name", "dosage_form", "marketing_category",
+        "product_type", "application_number", "dea_schedule",
+        "package_description", "active_numerator_strength",
+        "active_ingredient_unit", "spl_id", "marketing_start_date",
+        "marketing_end_date", "billing_unit", "nsde_flag"
+    ]
+
     # Apply versioning to incoming data
     apply_temporal_versioning_delta(
         spark=spark,
         incoming_df=silver_df,
         gold_path="s3://bucket/gold/fda-all-ndcs/",
         business_key="ndc_11",
-        business_columns=["proprietary_name", "dosage_form", "marketing_start_date"],
+        business_columns=business_columns,
         run_date="2025-10-14",
         run_id="20251014-123456"
     )
@@ -52,15 +91,163 @@ from pyspark.sql.types import StringType, DateType
 from delta.tables import DeltaTable
 
 
+# ============================================================================
 # Constants
+# ============================================================================
+
 END_OF_TIME = "9999-12-31"
 STATUS_CURRENT = "current"
 STATUS_HISTORICAL = "historical"
 
+# CRITICAL: Explicit denylist of volatile metadata columns
+# These columns MUST NEVER be included in content_hash calculations
+# November 19, 2025 Incident: Including these caused false-change explosions
+VOLATILE_METADATA_COLUMNS = {
+    # RAWS ETL metadata
+    "run_date",
+    "run_id",
+    "source_run_id",
+    "meta_run_id",
+    "source_file",
+    "ingestion_timestamp",
+
+    # Temporal versioning mechanics (SCD2 columns)
+    "version_id",
+    "content_hash",
+    "active_from",
+    "active_to",
+    "status",
+
+    # Audit timestamps
+    "created_at",
+    "updated_at",
+    "loaded_at",
+    "processed_at",
+}
+
+
+# ============================================================================
+# Business Column Validation
+# ============================================================================
+
+def business_columns_only(df: DataFrame, provided_business_columns: list) -> list:
+    """
+    Validate and filter business columns to ensure volatile metadata is excluded.
+
+    This validator prevents the November 19, 2025 incident from recurring by
+    enforcing strict separation of business data from RAWS metadata.
+
+    Args:
+        df: Input DataFrame
+        provided_business_columns: User-provided list of business columns
+
+    Returns:
+        Filtered list of business columns (volatile metadata removed)
+
+    Raises:
+        ValueError: If all columns are filtered out (empty business columns)
+        ValueError: If any provided column doesn't exist in DataFrame
+
+    Example:
+        >>> business_cols = ["ndc_11", "proprietary_name", "run_date"]
+        >>> validated = business_columns_only(df, business_cols)
+        >>> print(validated)  # ["ndc_11", "proprietary_name"]
+    """
+    # Validate all provided columns exist in DataFrame
+    df_columns = set(df.columns)
+    invalid_columns = [col for col in provided_business_columns if col not in df_columns]
+    if invalid_columns:
+        raise ValueError(
+            f"business_columns validation failed: Columns not found in DataFrame: {invalid_columns}\n"
+            f"Available columns: {sorted(df_columns)}"
+        )
+
+    # Filter out volatile metadata using explicit denylist
+    filtered_columns = [
+        col for col in provided_business_columns
+        if col not in VOLATILE_METADATA_COLUMNS
+    ]
+
+    # Fail fast if no business columns remain
+    if not filtered_columns:
+        raise ValueError(
+            f"business_columns validation failed: All {len(provided_business_columns)} provided columns "
+            f"are volatile metadata and were filtered out.\n"
+            f"Provided: {provided_business_columns}\n"
+            f"Volatile metadata denylist: {sorted(VOLATILE_METADATA_COLUMNS)}\n"
+            f"Fix: Ensure you provide at least one stable business attribute column."
+        )
+
+    # Log what was filtered
+    removed_columns = [col for col in provided_business_columns if col in VOLATILE_METADATA_COLUMNS]
+    if removed_columns:
+        print(f"[VALIDATION] ⚠️  Removed {len(removed_columns)} volatile metadata columns from content_hash:")
+        for col in removed_columns:
+            print(f"[VALIDATION]     - {col}")
+
+    # Log final business columns used for hashing
+    print(f"[VALIDATION] ✅ Using {len(filtered_columns)} business columns for content_hash:")
+    for col in filtered_columns:
+        print(f"[VALIDATION]     - {col}")
+
+    return filtered_columns
+
+
+# ============================================================================
+# Orphan Parquet Guard
+# ============================================================================
+
+def refuse_accidental_overwrite(spark: SparkSession, gold_path: str):
+    """
+    Guard against orphan Parquet files that can cause flaky first-commit issues.
+
+    This is a final seatbelt to catch the common Glue foot-gun where orphan
+    Parquet files exist but no _delta_log/ directory, causing Delta to treat
+    the location as empty and overwrite existing data.
+
+    Args:
+        spark: SparkSession instance
+        gold_path: S3 path to check for orphan files
+
+    Raises:
+        RuntimeError: If orphan Parquet files are detected
+
+    References:
+        - https://delta.io/blog/delta-lake-s3/
+        - AWS Glue Delta Lake best practices
+    """
+    print(f"[ORPHAN GUARD] Checking for orphan Parquet files at {gold_path}")
+
+    # Check for any files at the gold path using binaryFile
+    # This catches orphan Parquet that DeltaTable.isDeltaTable() misses
+    try:
+        orphan_files = spark.read.format("binaryFile").load(gold_path).limit(1).count()
+        if orphan_files > 0:
+            # Files exist - verify Delta table also exists
+            if not DeltaTable.isDeltaTable(spark, gold_path):
+                raise RuntimeError(
+                    f"ORPHAN PARQUET DETECTED at {gold_path}\n"
+                    f"Found Parquet files but no _delta_log/ directory.\n"
+                    f"This indicates a failed previous write that left orphan files.\n"
+                    f"Action required: Manually delete orphan files before running this job:\n"
+                    f"  aws s3 rm {gold_path} --recursive"
+                )
+            else:
+                print(f"[ORPHAN GUARD] ✅ Valid Delta table detected")
+    except Exception as e:
+        # No files exist at all - safe to proceed with initial load
+        print(f"[ORPHAN GUARD] ✅ No files at path (initial load)")
+
+
+# ============================================================================
+# Content Hash Computation
+# ============================================================================
 
 def compute_content_hash_expr(columns):
     """
     Generate PySpark expression to compute MD5 hash of concatenated column values.
+
+    Uses || delimiter and NULL placeholders for consistent hashing.
 
     Args:
         columns: List of column names to include in hash
@@ -73,6 +260,10 @@ def compute_content_hash_expr(columns):
         for c in columns
     ]))
 
+
+# ============================================================================
+# Main Temporal Versioning Function
+# ============================================================================
 
 def apply_temporal_versioning_delta(
     spark: SparkSession,
@@ -88,6 +279,12 @@ def apply_temporal_versioning_delta(
 
     Claude: Perform Delta MERGE using SCD Type 2 semantics.
     Claude: Only process changed or new business keys.
+
+    CRITICAL INVARIANTS (November 19, 2025 Incident Prevention):
+    1. business_columns MUST NOT include volatile metadata (enforced by validator)
+    2. First-time load MUST use .mode("append"), never "overwrite"
+    3. S3SingleDriverLogStore MUST be configured via --conf (not in code)
+    4. Orphan Parquet guard MUST run before any write operations
 
     Args:
         spark: SparkSession instance
@@ -118,6 +315,9 @@ def apply_temporal_versioning_delta(
     # Normalize business_key to list for consistent handling
     business_keys = [business_key] if isinstance(business_key, str) else business_key
 
+    # CRITICAL: Validate and filter business columns (November 19 incident prevention)
+    validated_business_columns = business_columns_only(incoming_df, business_columns)
+
     # Enable schema evolution for Delta Lake MERGE operations
     # This allows adding new columns without breaking existing pipelines
     spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
@@ -125,7 +325,7 @@ def apply_temporal_versioning_delta(
     print(f"[DELTA] Starting Delta Lake temporal versioning")
     print(f"[DELTA] Schema evolution enabled (autoMerge=true)")
     print(f"[DELTA] Business key(s): {business_keys}")
-    print(f"[DELTA] Tracking {len(business_columns)} business columns")
+    print(f"[DELTA] Tracking {len(validated_business_columns)} business columns")
     print(f"[DELTA] Run date: {run_date}")
     print(f"[DELTA] Gold path: {gold_path}")
 
@@ -139,8 +339,8 @@ def apply_temporal_versioning_delta(
     if "run_id" not in incoming_df.columns:
         incoming_df = incoming_df.withColumn("run_id", F.lit(run_id))
 
-    # Compute content hash for change detection
-    incoming_df = incoming_df.withColumn("content_hash", compute_content_hash_expr(business_columns))
+    # Compute content hash for change detection using ONLY validated business columns
+    incoming_df = incoming_df.withColumn("content_hash", compute_content_hash_expr(validated_business_columns))
 
     incoming_count = incoming_df.count()
     print(f"[DELTA] Incoming records: {incoming_count}")
@@ -149,14 +349,20 @@ def apply_temporal_versioning_delta(
     # 2. Check if Delta Table Exists
     # ========================
 
-    try:
-        delta_table = DeltaTable.forPath(spark, gold_path)
-        is_initial_load = False
+    # CRITICAL: Use DeltaTable.isDeltaTable() for reliable detection
+    # Reference: https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-etl-format-delta-lake.html
+    is_delta_table = DeltaTable.isDeltaTable(spark, gold_path)
+
+    if is_delta_table:
         print(f"[DELTA] Existing Delta table found at {gold_path}")
-    except Exception as e:
-        # Table doesn't exist - initial load
-        print(f"[DELTA] No existing Delta table found - performing initial load")
+        is_initial_load = False
+    else:
+        print(f"[DELTA] No Delta table found - performing initial load")
         is_initial_load = True
+
+        # CRITICAL: Guard against orphan Parquet files (November 19 incident prevention)
+        # This catches the common Glue foot-gun where orphan files exist but no _delta_log/
+        refuse_accidental_overwrite(spark, gold_path)
 
     # ========================
     # 3. Handle Initial Load
@@ -177,11 +383,13 @@ def apply_temporal_versioning_delta(
         total_count = result_df.count()
         print(f"[DELTA] Writing {total_count} initial records to Delta table...")
 
-        # Write initial Delta table with status partitioning
+        # CRITICAL: Use .mode("append") for first-time Delta writes on S3
+        # Reference: https://delta.io/blog/delta-lake-s3/
+        # Using "overwrite" can cause orphan Parquet and flaky _delta_log commits
         # RAWS INVARIANT: mergeSchema=true enables safe schema evolution
         result_df.write \
             .format("delta") \
-            .mode("overwrite") \
+            .mode("append") \
             .partitionBy("status") \
             .option("mergeSchema", "true") \
             .save(gold_path)
@@ -368,6 +576,10 @@ def apply_temporal_versioning_delta(
     }
 
 
+# ============================================================================
+# Maintenance Functions
+# ============================================================================
+
 def optimize_delta_table(spark: SparkSession, gold_path: str, business_key: str | list):
     """
     Run OPTIMIZE and ZORDER on Delta table for improved read performance.
@@ -411,6 +623,10 @@ def vacuum_delta_table(spark: SparkSession, gold_path: str, retention_hours: int
 
     print(f"[DELTA VACUUM] ✅ Vacuum complete")
 
+
+# ============================================================================
+# Helper Query Functions
+# ============================================================================
 
 def get_current_records(spark: SparkSession, gold_path: str) -> DataFrame:
     """

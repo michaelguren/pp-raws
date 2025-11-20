@@ -53,6 +53,48 @@ class EtlCoreStack extends cdk.Stack {
     // Grant S3 access to Glue for data warehouse bucket
     dataWarehouseBucket.grantReadWrite(glueRole);
 
+    // Grant Athena permissions for Delta test harness and ad-hoc queries
+    glueRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'athena:StartQueryExecution',
+        'athena:GetQueryExecution',
+        'athena:GetQueryResults',
+        'athena:StopQueryExecution',
+        'athena:GetWorkGroup',
+        'athena:ListQueryExecutions',
+        'athena:BatchGetQueryExecution',
+        'athena:GetQueryResultsStream'
+      ],
+      resources: [
+        `arn:aws:athena:${this.region}:${this.account}:workgroup/primary`,
+        `arn:aws:athena:${this.region}:${this.account}:workgroup/*`
+      ]
+    }));
+
+    // Grant Glue Data Catalog read permissions (for Athena queries)
+    glueRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'glue:GetDatabase',
+        'glue:GetTable',
+        'glue:GetPartitions',
+        'glue:GetPartition',
+        'glue:BatchGetPartition',
+        'glue:GetCrawler'
+      ],
+      resources: [
+        `arn:aws:glue:${this.region}:${this.account}:catalog`,
+        `arn:aws:glue:${this.region}:${this.account}:database/${bronzeDbName}`,
+        `arn:aws:glue:${this.region}:${this.account}:database/${silverDbName}`,
+        `arn:aws:glue:${this.region}:${this.account}:database/${goldDbName}`,
+        `arn:aws:glue:${this.region}:${this.account}:table/${bronzeDbName}/*`,
+        `arn:aws:glue:${this.region}:${this.account}:table/${silverDbName}/*`,
+        `arn:aws:glue:${this.region}:${this.account}:table/${goldDbName}/*`,
+        `arn:aws:glue:${this.region}:${this.account}:crawler/*`
+      ]
+    }));
+
     // Deploy shared runtime utilities (used by all datasets)
     new s3deploy.BucketDeployment(this, "RuntimeUtils", {
       sources: [s3deploy.Source.asset(rootSharedRuntimePath(__dirname))],

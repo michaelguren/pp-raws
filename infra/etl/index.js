@@ -27,6 +27,9 @@ const { GoldRxnormNdcMappingsStack } = require("./datasets/gold/rxnorm-ndc-mappi
 const { GoldRxnormProductClassificationsStack } = require("./datasets/gold/rxnorm-product-classifications/GoldRxnormProductClassificationsStack");
 const { GoldDrugsSyncStack } = require("./datasets/gold/drugs-sync/GoldDrugsSyncStack");
 
+// Import test stacks
+const { FdaAllNdcsDeltaLakeTestStack } = require("./datasets/gold/fda-all-ndcs/tests/FdaAllNdcsDeltaLakeTestStack");
+
 const app = new cdk.App();
 
 // Define environment once
@@ -149,6 +152,14 @@ const goldDrugsSyncStack = new GoldDrugsSyncStack(app, "pp-dw-etl-gold-drugs-syn
   description: "Gold Drugs Sync - Syncs drug_product_codesets from Gold layer to DynamoDB"
 });
 goldDrugsSyncStack.addDependency(etlCoreStack);
+
+// Deploy FDA All NDCs Delta Lake confidence test
+const fdaAllNdcsDeltaLakeTestStack = new FdaAllNdcsDeltaLakeTestStack(app, "pp-dw-test-gold-fda-all-ndcs", {
+  env,
+  etlCoreStack,
+  description: "Delta Lake confidence test for FDA All NDCs Gold layer"
+});
+fdaAllNdcsDeltaLakeTestStack.addDependency(etlCoreStack);
 
 // Add tags to all ETL stacks
 cdk.Tags.of(app).add("Project", "pp-dw");

@@ -1,14 +1,14 @@
 """
 FDA SILVER Layer ETL Job - Combine NSDE and CDER Data
-Creates unified fda_all_ndc table with INNER JOIN of both datasets
-Only includes NDCs present in both NSDE and CDER data
+Creates unified fda_all_ndc table with FULL OUTER JOIN of both datasets
+Includes all NDCs from both NSDE and CDER (union of both datasets)
 """
 import sys
 from awsglue.utils import getResolvedOptions  # type: ignore[import-not-found]
 from pyspark.context import SparkContext  # type: ignore[import-not-found]
 from awsglue.context import GlueContext  # type: ignore[import-not-found]
 from awsglue.job import Job  # type: ignore[import-not-found]
-from pyspark.sql.functions import lit, col, when, substring, expr, split, lpad, regexp_replace, concat  # type: ignore[import-not-found]
+from pyspark.sql.functions import lit, col, when, substring, expr, split, lpad, regexp_replace, concat, coalesce  # type: ignore[import-not-found]
 
 # Get job parameters
 args = getResolvedOptions(sys.argv, [
@@ -44,7 +44,7 @@ nsde_table = args['nsde_table']
 cder_products_table = args['cder_products_table']
 cder_packages_table = args['cder_packages_table']
 
-print(f"Starting SILVER ETL for {dataset} (INNER JOIN NSDE + CDER)")
+print(f"Starting SILVER ETL for {dataset} (FULL OUTER JOIN NSDE + CDER)")
 print(f"Bronze database: {bronze_database}")
 print(f"Silver database: {silver_database}")
 print(f"Silver path: {silver_path}")
@@ -134,8 +134,8 @@ try:
 
     print(f"CDER joined records: {cder_joined.count()}")
 
-    # Step 4: INNER JOIN with NSDE (only NDCs present in both datasets)
-    print("Performing INNER JOIN with NSDE data...")
+    # Step 4: FULL OUTER JOIN with NSDE (union of all NDCs from both datasets)
+    print("Performing FULL OUTER JOIN with NSDE data...")
 
     # Create alias for nsde columns to avoid ambiguity
     nsde_selected = nsde_df.select(
@@ -153,10 +153,10 @@ try:
     silver_df = cder_joined.join(
         nsde_selected,
         cder_joined["ndc_11"] == nsde_selected["nsde_ndc_11"],
-        "inner"
+        "full_outer"
     ).select(
-        # Primary key
-        cder_joined["ndc_11"],
+        # Primary key (coalesce handles NSDE-only and CDER-only records)
+        coalesce(cder_joined["ndc_11"], nsde_selected["nsde_ndc_11"]).alias("ndc_11"),
 
         # Prioritize NSDE data where available, fallback to CDER
         when(col("nsde_marketing_category").isNotNull() & (col("nsde_marketing_category") != ""),
@@ -191,14 +191,14 @@ try:
         when(col("nsde_billing_unit").isNotNull() & (col("nsde_billing_unit") != ""),
              col("nsde_billing_unit")).otherwise(cder_joined["billing_unit"]).alias("billing_unit"),
 
-        # Flag indicating NSDE presence (always TRUE since this is INNER JOIN)
-        lit(True).alias("nsde_flag"),
+        # Flag indicating NSDE presence (TRUE for BOTH/NSDE_ONLY, FALSE for CDER_ONLY)
+        nsde_selected["nsde_ndc_11"].isNotNull().alias("nsde_flag"),
 
         # Metadata
         cder_joined["meta_run_id"]
     )
 
-    print(f"Final SILVER records (INNER JOIN): {silver_df.count()}")
+    print(f"Final SILVER records (FULL OUTER JOIN): {silver_df.count()}")
     print(f"Final SILVER columns: {silver_df.columns}")
 
     # Step 5: Write to SILVER layer

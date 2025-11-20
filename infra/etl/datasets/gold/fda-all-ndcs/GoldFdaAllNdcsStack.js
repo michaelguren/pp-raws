@@ -107,6 +107,11 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
         // Note: --datalake-formats=delta auto-configures Spark extensions and Delta catalog in Glue 5.0
         '--datalake-formats': 'delta',
 
+        // CRITICAL: S3SingleDriverLogStore for Delta Lake reliability on S3
+        // Reference: https://delta.io/blog/delta-lake-s3/
+        // AWS Best Practice: Prevents transaction log conflicts and orphan files
+        '--conf': 'spark.delta.logStore.class=org.apache.spark.sql.delta.storage.S3SingleDriverLogStore',
+
         // Extra Python files - Delta Lake temporal versioning library
         '--extra-py-files': `${temporalLibPath}temporal_versioning_delta.py`,
 
@@ -137,31 +142,44 @@ class GoldFdaAllNdcsStack extends cdk.Stack {
     goldJob.node.addDependency(dataWarehouseBucket);
 
     // Create Glue Crawler for Delta Lake table registration
-    // The crawler will register the Delta table in the Glue Data Catalog after the
-    // first successful GOLD job run. This AWS-native pattern replaces the previous
-    // AwsCustomResource approach for cleaner, more maintainable infrastructure.
-    //
+    // Uses native deltaTargets for proper Delta Lake detection (AWS Glue 2025+ best practice)
     // Runtime sequence: Deploy → Run job → Run crawler → Query Athena
     const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
       name: `${etlConfig.etl_resource_prefix}-gold-${dataset}-crawler`,
       role: glueRole.roleArn,
       databaseName: goldDatabase,
-      description: `Crawler for Delta Lake table ${goldTableName} in Gold layer`,
+      description: `Crawler for Gold Delta table ${dataset}`,
 
+      // Native Delta Lake target (replaces s3Targets + classifiers pattern)
+      // Automatically detects Delta format, prevents garbage tables from _delta_log/
       targets: {
-        s3Targets: [{
-          path: goldBasePath
+        deltaTargets: [{
+          deltaTables: [goldBasePath],  // s3://.../gold/fda-all-ndcs/
+          writeManifest: false,
+          createNativeDeltaTable: true  // Register as Delta, not Parquet with symlinks
         }]
       },
 
       schemaChangePolicy: {
         updateBehavior: 'UPDATE_IN_DATABASE',
         deleteBehavior: 'DEPRECATE_IN_DATABASE'
-      }
+      },
+
+      configuration: JSON.stringify({
+        Version: 1.0,
+        CrawlerOutput: {
+          Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
+          Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
+        }
+      })
     });
 
     // Crawler only needs bucket to exist (not the job - they are peers)
     goldCrawler.node.addDependency(dataWarehouseBucket);
+
+    // ========================================================================
+    // Production Job Scheduling (if enabled)
+    // ========================================================================
 
     // Create EventBridge rule for scheduling if enabled
     if (datasetConfig.schedule?.enabled) {

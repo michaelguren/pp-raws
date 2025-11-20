@@ -503,6 +503,178 @@ WHERE rxcui = '392409' AND class_type = 'ATC' AND status = 'current';
 
 ---
 
+## 🔥 RAWS Delta Lake Invariants (Production-Hardened)
+
+**CRITICAL: November 19, 2025 Incident Prevention**
+
+The following invariants are **non-negotiable** for all Gold Delta Lake implementations. They prevent the catastrophic false-change explosion that occurred on November 19, 2025, where including volatile metadata in `content_hash` caused all ~80K records to be expired and re-inserted, destroying temporal history.
+
+### The 5 Commandments
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                        RAWS DELTA INVARIANTS                                 ║
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║  1. Business content_hash MUST ONLY include stable source business          ║
+║     attributes. NEVER hash: run_date, run_id, source_run_id, source_file,  ║
+║     meta_run_id, ingestion_timestamp, or any RAWS metadata.                 ║
+║                                                                              ║
+║  2. First-ever Delta write on S3 MUST use .mode("append"), never            ║
+║     "overwrite". Subsequent writes MUST use MERGE for SCD2.                 ║
+║                                                                              ║
+║  3. Always set spark.delta.logStore.class=S3SingleDriverLogStore via       ║
+║     Glue job --conf (AWS best practice for S3 reliability).                 ║
+║                                                                              ║
+║  4. Schema evolution MUST be enabled (mergeSchema=true) on all writes.      ║
+║                                                                              ║
+║  5. Use refuse_accidental_overwrite() guard with binaryFile check as        ║
+║     final seatbelt against orphan Parquet / flaky first-commit issues.      ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
+### Invariant 1: Business-Only Content Hash
+
+**The November 19 Incident (Root Cause):**
+```python
+# ❌ WRONG - Caused production incident
+business_columns = [
+    "ndc_11", "proprietary_name", "dosage_form",
+    "run_date",        # 🔥 VOLATILE - Changes every run
+    "run_id",          # 🔥 VOLATILE - Changes every run
+    "source_run_id"    # 🔥 VOLATILE - Changes every run
+]
+# Result: ALL rows appeared CHANGED → all expired + re-inserted → history destroyed
+```
+
+**Production-Hardened Fix:**
+```python
+# ✅ CORRECT - Explicit business columns only
+business_columns = [
+    "ndc_11", "ndc_5", "proprietary_name", "dosage_form",
+    "marketing_category", "product_type", "application_number",
+    "dea_schedule", "package_description", "active_numerator_strength",
+    "active_ingredient_unit", "spl_id", "marketing_start_date",
+    "marketing_end_date", "billing_unit", "nsde_flag"
+]
+# Library automatically filters out volatile metadata using VOLATILE_METADATA_COLUMNS denylist
+```
+
+**Explicit Denylist (Enforced by Library):**
+```python
+VOLATILE_METADATA_COLUMNS = {
+    # RAWS ETL metadata
+    "run_date", "run_id", "source_run_id", "meta_run_id",
+    "source_file", "ingestion_timestamp",
+
+    # Temporal versioning mechanics
+    "version_id", "content_hash", "active_from", "active_to", "status",
+
+    # Audit timestamps
+    "created_at", "updated_at", "loaded_at", "processed_at"
+}
+```
+
+**Validation Behavior:**
+The `business_columns_only()` validator in `temporal_versioning_delta.py`:
+1. ✅ Filters volatile columns using explicit denylist
+2. ✅ Fails fast if all columns are filtered (empty business columns)
+3. ✅ Logs which columns were removed and which are used for hashing
+4. ✅ Returns only stable business attributes for content_hash calculation
+
+### Invariant 2: First Write Must Be Append
+
+**AWS/Delta.io Best Practice:**
+```python
+# ✅ CORRECT - Initial load
+result_df.write \
+    .format("delta") \
+    .mode("append") \          # APPEND, not overwrite
+    .partitionBy("status") \
+    .option("mergeSchema", "true") \
+    .save(gold_path)
+
+# ❌ WRONG - Can cause orphan Parquet and flaky _delta_log commits
+result_df.write.mode("overwrite").save(gold_path)
+```
+
+**Reference:** https://delta.io/blog/delta-lake-s3/
+
+### Invariant 3: S3SingleDriverLogStore Configuration
+
+**CDK Configuration (Required):**
+```javascript
+// In GoldStack.js defaultArguments
+'--datalake-formats': 'delta',
+'--conf': 'spark.delta.logStore.class=org.apache.spark.sql.delta.storage.S3SingleDriverLogStore'
+```
+
+**Why This Matters:**
+- Prevents transaction log conflicts in S3
+- Avoids race conditions during concurrent writes
+- Ensures consistent `_delta_log/` state
+- AWS Glue best practice for Delta Lake on S3
+
+**Reference:** https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-etl-format-delta-lake.html
+
+### Invariant 4: Schema Evolution Always Enabled
+
+```python
+# In library: apply_temporal_versioning_delta()
+spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
+
+# On every write
+.option("mergeSchema", "true")
+```
+
+**Benefit:** Adding new columns becomes a non-event, not a production incident.
+
+### Invariant 5: Orphan Parquet Guard
+
+**The Glue Foot-Gun:**
+Orphan Parquet files can exist without `_delta_log/`, causing Delta to treat the location as empty and overwrite existing data.
+
+**Protection:**
+```python
+def refuse_accidental_overwrite(spark: SparkSession, gold_path: str):
+    """Guard against orphan Parquet files"""
+    orphan_files = spark.read.format("binaryFile").load(gold_path).limit(1).count()
+    if orphan_files > 0 and not DeltaTable.isDeltaTable(spark, gold_path):
+        raise RuntimeError(f"ORPHAN PARQUET DETECTED at {gold_path}")
+```
+
+**When It Runs:** Before any initial Delta write operation.
+
+### Production Validation Checklist
+
+Before deploying Gold Delta Lake jobs:
+
+- [ ] business_columns contains ONLY stable source attributes
+- [ ] No volatile metadata in business_columns (run_date, run_id, etc.)
+- [ ] CDK has `--conf` for S3SingleDriverLogStore
+- [ ] Initial write uses `.mode("append")`
+- [ ] All writes have `.option("mergeSchema", "true")`
+- [ ] `refuse_accidental_overwrite()` guard is called before first write
+- [ ] `DeltaTable.isDeltaTable()` used for first-time detection
+- [ ] SparkConf configured BEFORE SparkContext creation
+
+### References
+
+- **AWS Glue Delta Lake Best Practices (2025):**
+  https://docs.aws.amazon.com/glue/latest/dg/aws-glue-programming-etl-format-delta-lake.html
+
+- **Delta Lake S3 Reliability:**
+  https://delta.io/blog/delta-lake-s3/
+
+- **Incident Report:**
+  See `DELTA_TABLE_REGISTRATION.md` for complete November 19, 2025 post-mortem
+
+- **Reference Implementation:**
+  `infra/etl/datasets/gold/fda-all-ndcs/` - Canonical Gold Delta pattern
+
+---
+
 ## Reading from Glue Data Catalog
 
 **CRITICAL: Always use `glueContext.create_dynamic_frame.from_catalog()` to read tables from the Glue Data Catalog.**
@@ -611,7 +783,7 @@ Modern Glue Crawlers properly detect Delta Lake format and support automatic sch
 
 **Historical Note**: Earlier implementations used `AwsCustomResource` (Lambda-backed custom resource), which added procedural complexity and IAM overhead. This pattern is now deprecated.
 
-**Production Pattern: `glue.CfnCrawler` with Schema Change Policies:**
+**Production Pattern: `glue.CfnCrawler` with Native Delta Lake Support:**
 
 ```javascript
 const cdk = require("aws-cdk-lib");
@@ -621,20 +793,23 @@ const glue = require("aws-cdk-lib/aws-glue");
 const goldBasePath = `s3://${bucketName}/gold/${dataset}/`;
 
 // Create Glue Crawler for Delta Lake table discovery
+// Uses native deltaTargets (AWS Glue 2025+ best practice)
 const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
-  name: `${etlConfig.etl_resource_prefix}-gold-crawler-${dataset}`,
-  description: `Crawler for GOLD ${dataset} Delta Lake table`,
+  name: `${etlConfig.etl_resource_prefix}-gold-${dataset}-crawler`,
   role: glueRole.roleArn,
   databaseName: goldDatabase,
+  description: `Crawler for Gold Delta table ${dataset}`,
 
-  // Target S3 path where Delta Lake data is written
+  // Native Delta Lake target - automatically detects Delta format
+  // Prevents garbage tables from _delta_log/ directory
   targets: {
-    s3Targets: [{
-      path: goldBasePath
+    deltaTargets: [{
+      deltaTables: [goldBasePath],  // s3://.../gold/fda-all-ndcs/
+      writeManifest: false
     }]
   },
 
-  // CRITICAL: Schema change policies enable automatic evolution
+  // Schema change policies enable automatic evolution
   schemaChangePolicy: {
     updateBehavior: 'UPDATE_IN_DATABASE',      // Add new columns
     deleteBehavior: 'DEPRECATE_IN_DATABASE'    // Mark removed columns
@@ -647,12 +822,7 @@ const goldCrawler = new glue.CfnCrawler(this, 'GoldCrawler', {
       Partitions: { AddOrUpdateBehavior: "InheritFromTable" },
       Tables: { AddOrUpdateBehavior: "MergeNewColumns" }
     }
-  }),
-
-  // On-demand only (invoked by Step Functions)
-  schedule: {
-    scheduleExpression: ''  // Empty = no schedule
-  }
+  })
 });
 
 // Crawler depends on bucket (not job - they're peers)
@@ -660,6 +830,50 @@ goldCrawler.node.addDependency(dataWarehouseBucket);
 
 // Export for Step Functions orchestration
 this.goldCrawler = goldCrawler;
+```
+
+### ✅ Native Delta Lake Crawling (2025 Best Practice)
+
+**Modern Approach**: Use `deltaTargets` instead of `s3Targets` + classifiers.
+
+**Why `deltaTargets` is better**:
+- ✅ Purpose-built for Delta Lake tables
+- ✅ Automatically detects Delta format (no classifier needed)
+- ✅ Prevents garbage tables from `_delta_log/` directory
+- ✅ Simpler configuration (one property vs two)
+- ✅ Official AWS recommendation for Glue 5.0+
+
+**Old Pattern (deprecated)**:
+```javascript
+classifiers: ['delta-lake'],  // No longer needed
+targets: {
+  s3Targets: [{ path: goldBasePath }]  // Use deltaTargets instead
+}
+```
+
+**New Pattern (current)**:
+```javascript
+targets: {
+  deltaTargets: [{
+    deltaTables: [goldBasePath],
+    writeManifest: false
+  }]
+}
+```
+
+**Rule**: If your Glue job has `'--datalake-formats': 'delta'`, your crawler MUST use `deltaTargets`.
+
+**Verification**:
+```bash
+# After deploying and running crawler, check Glue catalog
+aws glue get-table --database-name pp_dw_gold --name fda_all_ndcs --query 'Table.Parameters'
+
+# Expected output (Delta Lake correctly detected):
+{
+  "classification": "delta",
+  "table_type": "DELTA",
+  "EXTERNAL": "TRUE"
+}
 ```
 
 **Step Functions Orchestration** (control-plane, NOT data-plane):

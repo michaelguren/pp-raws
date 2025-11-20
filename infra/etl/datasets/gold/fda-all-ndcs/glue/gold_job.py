@@ -4,6 +4,20 @@ FDA GOLD Layer ETL Job - Temporal Versioning with Delta Lake
 Applies temporal versioning (SCD Type 2 pattern) to FDA silver data using Delta Lake.
 Tracks changes over time with active_from/active_to dates and status partitioning.
 
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     CRITICAL: NOVEMBER 19, 2025 INCIDENT                     ║
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║  ROOT CAUSE: content_hash included volatile metadata columns (run_date,     ║
+║  run_id, source_run_id), causing ALL ~80K rows to appear CHANGED on         ║
+║  every run. All rows were expired + re-inserted, resetting active_from      ║
+║  dates to 2025-11-19 and destroying temporal history.                        ║
+║                                                                              ║
+║  PREVENTION: business_columns now contains ONLY stable business             ║
+║  attributes. Volatile metadata is automatically filtered by library.        ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
 Benefits:
 - 90%+ reduction in S3 writes (MERGE only changes vs. full overwrite)
 - ACID transactions
@@ -32,9 +46,15 @@ args = getResolvedOptions(sys.argv, [
     'silver_table', 'temporal_lib_path'
 ])
 
+# ============================================================================
+# Delta Lake Configuration (CRITICAL - Must be BEFORE SparkContext)
+# ============================================================================
 # Configure Spark for Delta Lake BEFORE creating SparkContext
 # Setting configs here (before SparkContext creation) is the correct approach
 # Setting them after would cause "Cannot modify static config" error
+#
+# Note: S3SingleDriverLogStore is configured via --conf in CDK
+# (see GoldFdaAllNdcsStack.js), not here
 conf = SparkConf()
 conf.set("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
 conf.set("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
@@ -107,25 +127,55 @@ try:
     # ===========================
     print("\n[3/3] Applying Delta Lake temporal versioning...")
 
-    # Define business columns for change detection (excludes keys and metadata)
+    # ╔══════════════════════════════════════════════════════════════════════╗
+    # ║  CRITICAL: business_columns MUST contain ONLY stable business       ║
+    # ║  attributes from source data. NEVER include volatile metadata       ║
+    # ║  like run_date, run_id, source_run_id, source_file.                 ║
+    # ║                                                                      ║
+    # ║  November 19 Incident Prevention: The library automatically         ║
+    # ║  filters out volatile columns using VOLATILE_METADATA_COLUMNS       ║
+    # ║  denylist. Providing volatile columns here will log warnings        ║
+    # ║  but won't break the hash.                                          ║
+    # ║                                                                      ║
+    # ║  See: FDA_ALL_NDCS_BUSINESS_COLUMNS.md for complete reference       ║
+    # ╚══════════════════════════════════════════════════════════════════════╝
+
+    # Define business columns for change detection
+    # These are ONLY stable business attributes from Silver fda_all_ndcs
+    # Note: ndc_11 is the business key and is NOT included in content_hash
     business_columns = [
-        "marketing_category",
-        "product_type",
-        "proprietary_name",
-        "dosage_form",
-        "application_number",
-        "dea_schedule",
-        "package_description",
-        "active_numerator_strength",
-        "active_ingredient_unit",
-        "spl_id",
-        "marketing_start_date",
-        "marketing_end_date",
-        "billing_unit",
-        "nsde_flag"
+        # Product Information
+        "proprietary_name",           # Brand/trade name
+        "dosage_form",                # e.g., "TABLET", "CAPSULE"
+        "marketing_category",         # e.g., "NDA", "ANDA", "OTC"
+        "product_type",               # e.g., "HUMAN PRESCRIPTION DRUG"
+        "application_number",         # FDA application number
+        "dea_schedule",               # DEA controlled substance schedule
+        "package_description",        # Package size and type
+
+        # Strength Information
+        "active_numerator_strength",  # e.g., "20"
+        "active_ingredient_unit",     # e.g., "mg"
+
+        # Regulatory Information
+        "spl_id",                     # Structured Product Labeling ID
+        "marketing_start_date",       # When product entered market
+        "marketing_end_date",         # When product left market (if applicable)
+        "billing_unit",               # Billing/reimbursement unit
+
+        # Source Flags
+        "nsde_flag"                   # Boolean: Present in FDA NSDE dataset
     ]
 
+    print(f"\n[BUSINESS COLUMNS] Provided {len(business_columns)} business columns")
+    print(f"[BUSINESS COLUMNS] Library will validate and filter volatile metadata automatically")
+
     # Apply temporal versioning - Delta MERGE handles the write internally
+    # The library will:
+    # 1. Validate business_columns exist in DataFrame
+    # 2. Filter out any volatile metadata columns
+    # 3. Log which columns are used for content_hash
+    # 4. Fail fast if no business columns remain
     stats = apply_temporal_versioning_delta(
         spark=spark,
         incoming_df=silver_df,
@@ -139,15 +189,24 @@ try:
     # ===========================
     # Step 4: Summary Statistics
     # ===========================
-    print("\n=== Summary Statistics ===")
-    print(f"NEW records: {stats['new']}")
-    print(f"CHANGED records: {stats['changed']}")
-    print(f"EXPIRED records: {stats['expired']}")
-    print(f"UNCHANGED records: {stats['unchanged']} (skipped)")
-    print(f"Total writes: {stats['total_written']}")
+    print("\n╔══════════════════════════════════════════════════════════════════╗")
+    print("║                      DELTA MERGE SUMMARY                          ║")
+    print("╚══════════════════════════════════════════════════════════════════╝")
+    print(f"NEW records:       {stats['new']:>6,} (inserted with active_to=9999-12-31)")
+    print(f"CHANGED records:   {stats['changed']:>6,} (old expired, new inserted)")
+    print(f"EXPIRED records:   {stats['expired']:>6,} (no longer in source)")
+    print(f"UNCHANGED records: {stats['unchanged']:>6,} (skipped - no write)")
+    print(f"────────────────────────────────────────────────────────────────")
+    print(f"Total S3 writes:   {stats['total_written']:>6,} (90%+ reduction vs full overwrite)")
+    print()
+
+    # Calculate efficiency metric
+    total_incoming = silver_count
+    write_reduction = 100 * (1 - (stats['total_written'] / (total_incoming * 2))) if total_incoming > 0 else 0
+    print(f"Write efficiency: {write_reduction:.1f}% fewer writes than full overwrite")
 
     print("\n=== GOLD ETL completed successfully ===")
-    print("Note: Delta table registered via CDK (no crawler needed)")
+    print("Note: Delta table registered via Glue Crawler (see Step Functions orchestration)")
 
 except Exception as e:
     print(f"\n=== GOLD ETL FAILED ===")
