@@ -109,7 +109,7 @@ All stacks follow the pattern: `pp-dw-{domain}-{component}`
 
 ## AWS SDK Requirements
 
-**CRITICAL: All infrastructure code MUST use AWS SDK v2**
+**CRITICAL: All infrastructure code MUST use AWS SDK v3 (modular)**
 
 **JavaScript/Node.js:**
 ```javascript
